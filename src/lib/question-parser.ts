@@ -1,0 +1,296 @@
+import { MCQQuestion, ConfidenceLevel, QuestionStatus } from "@/types/question";
+import {
+  bengaliDigitsToEnglish,
+  normalizeOptionKey,
+  hasBengaliText,
+  ROMAN_TO_BENGALI_OPTION_MAP,
+} from "./text-normalizer";
+import { extractInlineAnswer, parseAnswerKeySection } from "./answer-parser";
+import { PageTextData } from "./pdf-parser";
+
+interface RawQuestionBlock {
+  rawNumber: string;
+  number: number;
+  blockText: string;
+  pageNumber?: number;
+}
+
+/**
+ * Splits document text into individual raw question blocks based on question number patterns.
+ */
+export function splitIntoQuestionBlocks(
+  pages: PageTextData[] | string
+): RawQuestionBlock[] {
+  // If string passed, treat as page 1
+  const pageList: { pageNumber: number; text: string }[] =
+    typeof pages === "string"
+      ? [{ pageNumber: 1, text: pages }]
+      : pages.map((p) => ({ pageNumber: p.pageNumber, text: p.text }));
+
+  const blocks: RawQuestionBlock[] = [];
+
+  // Match question start at the beginning of a line:
+  // Examples:
+  // "1. ", "1) ", "(1) ", "Q1. ", "Q.1: ", "Question 1: ", "Que 1 - "
+  // "১। ", "১. ", "১) ", "(১) ", "প্রশ্ন ১: "
+  const questionStartRegex =
+    /^[ \t]*(?:(?:Question|Que|Item|Q|প্রশ্ন)\s*[:.\-–—]?\s*)?\(?([0-9]{1,4}|[০-৯]{1,4})\)?\s*([.:)\]।\-–—])(?:\s+|$)/im;
+
+  let currentBlock: RawQuestionBlock | null = null;
+
+  for (const page of pageList) {
+    const lines = page.text.split("\n");
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Stop parsing if we hit an Answer Key / উত্তরমালা header
+      if (
+        /^[ \t]*(?:Answer\s*Key|Answers|Solutions|Exam\s*Key|উত্তরমালা|সমাধান|সঠিক\s*উত্তরসমূহ)\s*[:\-–—]?/i.test(
+          line
+        )
+      ) {
+        if (currentBlock) {
+          blocks.push(currentBlock);
+          currentBlock = null;
+        }
+        break;
+      }
+
+      const match = line.match(questionStartRegex);
+
+      if (match) {
+        const rawNum = match[1];
+        const delimiter = match[2];
+        const numVal = parseInt(bengaliDigitsToEnglish(rawNum), 10);
+
+        // Sanity check: must be a positive integer <= 500
+        if (!isNaN(numVal) && numVal > 0 && numVal <= 500) {
+          // If we had a previous block, push it
+          if (currentBlock) {
+            blocks.push(currentBlock);
+          }
+
+          // Remainder of the first line without the question number prefix
+          const lineRest = line.slice(match[0].length).trim();
+
+          currentBlock = {
+            rawNumber: rawNum,
+            number: numVal,
+            blockText: lineRest,
+            pageNumber: page.pageNumber,
+          };
+          continue;
+        }
+      }
+
+      // If we are currently inside a question block, append the line
+      if (currentBlock) {
+        if (currentBlock.blockText) {
+          currentBlock.blockText += "\n" + line;
+        } else {
+          currentBlock.blockText = line;
+        }
+      }
+    }
+  }
+
+  if (currentBlock) {
+    blocks.push(currentBlock);
+  }
+
+  return blocks;
+}
+
+/**
+ * Extracts question prompt and options from a question block text.
+ */
+export function extractQuestionAndOptions(
+  blockText: string
+): {
+  questionText: string;
+  options: Record<string, string>;
+} {
+  const options: Record<string, string> = {};
+
+  // First extract any inline answer so it doesn't get merged into an option
+  const { cleanedBlockText } = extractInlineAnswer(blockText);
+
+  // We look for option markers in sequential order.
+  // Standard sets:
+  // Roman/English: A, B, C, D (and optionally E)
+  // Bengali: ক, খ, গ, ঘ (and optionally ঙ)
+  // Lowercase: a, b, c, d (and optionally e)
+  // Numeric: (1), (2), (3), (4) or 1., 2., 3., 4.
+
+  // Regex to find option markers anywhere in the text:
+  // Matches:
+  // (A), (B), (C), (D) or (a), (b)... or (ক), (খ)...
+  // A., B., C., D. or A), B), C), D) or A:
+  // ক., ক), ক। or ১), ২)...
+  const optionMarkerRegex =
+    /(?:^|\s|\n)(?:\(?([A-Ea-eক-ঙ1-5])\)|([A-Ea-eক-ঙ])\s*[.:)\]।\-–—])(?:\s+|$)/g;
+
+  const matches: { key: string; rawMarker: string; index: number; length: number }[] = [];
+  let m: RegExpExecArray | null;
+
+  while ((m = optionMarkerRegex.exec(cleanedBlockText)) !== null) {
+    const rawKey = m[1] || m[2];
+    if (rawKey) {
+      matches.push({
+        key: normalizeOptionKey(rawKey),
+        rawMarker: m[0],
+        index: m.index,
+        length: m[0].length,
+      });
+    }
+  }
+
+  // Filter matches to ensure they follow a plausible option sequence (e.g. A, B, C, D...)
+  const validOptionOrder: string[] = ["A", "B", "C", "D", "E"];
+  const sequenceMatches: typeof matches = [];
+  let expectedIndex = 0;
+
+  for (const match of matches) {
+    if (match.key === validOptionOrder[expectedIndex]) {
+      sequenceMatches.push(match);
+      expectedIndex++;
+      if (expectedIndex >= validOptionOrder.length) break;
+    }
+  }
+
+  // If we found at least 2 sequential options (A and B or more)
+  if (sequenceMatches.length >= 2) {
+    const firstOption = sequenceMatches[0];
+    const questionText = cleanedBlockText.slice(0, firstOption.index).trim();
+
+    for (let i = 0; i < sequenceMatches.length; i++) {
+      const current = sequenceMatches[i];
+      const startContent = current.index + current.length;
+      const endContent =
+        i + 1 < sequenceMatches.length
+          ? sequenceMatches[i + 1].index
+          : cleanedBlockText.length;
+
+      const optionContent = cleanedBlockText.slice(startContent, endContent).trim();
+      options[current.key] = optionContent;
+    }
+
+    return {
+      questionText: questionText || cleanedBlockText,
+      options,
+    };
+  }
+
+  // Fallback: If strict sequence was not found, try line-by-line inspection
+  const lines = cleanedBlockText.split("\n");
+  const fallbackOptions: Record<string, string> = {};
+  const questionLines: string[] = [];
+  let foundFirstOption = false;
+  let currentKey: string | null = null;
+
+  const lineOptionRegex = /^[ \t]*(?:\(?([A-Ea-eক-ঙ1-5])\)|([A-Ea-eক-ঙ])\s*[.:)\]।\-–—])\s*(.*)$/i;
+
+  for (const line of lines) {
+    const lineMatch = line.match(lineOptionRegex);
+    if (lineMatch) {
+      foundFirstOption = true;
+      const rawKey = lineMatch[1] || lineMatch[2];
+      currentKey = normalizeOptionKey(rawKey);
+      fallbackOptions[currentKey] = lineMatch[3].trim();
+    } else if (foundFirstOption && currentKey) {
+      fallbackOptions[currentKey] += " " + line.trim();
+    } else {
+      questionLines.push(line);
+    }
+  }
+
+  if (Object.keys(fallbackOptions).length >= 2) {
+    return {
+      questionText: questionLines.join("\n").trim(),
+      options: fallbackOptions,
+    };
+  }
+
+  // If no options detected at all
+  return {
+    questionText: cleanedBlockText.trim(),
+    options: {},
+  };
+}
+
+/**
+ * Main parser entry point: takes raw pages/text and parses into structured MCQQuestion objects.
+ */
+export function parseMCQDocument(
+  pages: PageTextData[] | string,
+  fullText: string
+): MCQQuestion[] {
+  const blocks = splitIntoQuestionBlocks(pages);
+
+  // Also parse standalone answer key section if present in the document
+  const answerKeyMap = parseAnswerKeySection(fullText);
+
+  const questions: MCQQuestion[] = [];
+
+  for (let i = 0; i < blocks.length; i++) {
+    const block = blocks[i];
+    const qNum = block.number || i + 1;
+
+    // 1. Extract inline answer if available
+    const inlineAnsResult = extractInlineAnswer(block.blockText);
+
+    // 2. Extract question text and options
+    const { questionText, options } = extractQuestionAndOptions(block.blockText);
+
+    // 3. Determine correct answer:
+    // Priority: Inline answer in question block > Separate Answer Key section
+    let answer = inlineAnsResult.correctAnswer;
+    if (!answer && answerKeyMap.has(qNum)) {
+      answer = answerKeyMap.get(qNum) || null;
+    }
+
+    // Check if the document is Bengali to preserve Bengali option labels if appropriate
+    const isBengali = hasBengaliText(questionText) || hasBengaliText(block.blockText);
+
+    // Normalize option keys to uppercase standard A, B, C, D
+    const standardizedOptions: Record<string, string> = {};
+    for (const [k, v] of Object.entries(options)) {
+      const normKey = normalizeOptionKey(k);
+      standardizedOptions[normKey] = v;
+    }
+
+    // Determine confidence and status
+    const optionCount = Object.keys(standardizedOptions).length;
+    let confidence: ConfidenceLevel = "needs-review";
+    let status: QuestionStatus = "needs_review";
+
+    if (optionCount >= 4 && answer !== null && standardizedOptions[answer]) {
+      confidence = "high";
+      status = "answered";
+    } else if (optionCount >= 3 && answer !== null) {
+      confidence = "medium";
+      status = "answered";
+    } else if (optionCount >= 3 && answer === null) {
+      confidence = "needs-review";
+      status = "missing_answer";
+    } else {
+      confidence = "needs-review";
+      status = "needs_review";
+    }
+
+    questions.push({
+      id: `q-${qNum}-${Date.now()}-${i}`,
+      number: qNum,
+      rawNumber: block.rawNumber,
+      question: questionText || `Question ${qNum}`,
+      options: standardizedOptions,
+      correctAnswer: answer,
+      confidence,
+      status,
+      pageNumber: block.pageNumber || 1,
+    });
+  }
+
+  return questions;
+}
