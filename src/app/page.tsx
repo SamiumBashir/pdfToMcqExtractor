@@ -16,6 +16,8 @@ import {
   ExtractionStats,
   ExtractionProgress,
 } from "@/types/question";
+import { extractTextFromPDFClient } from "@/lib/client-pdf-parser";
+import { parseMCQDocument } from "@/lib/question-parser";
 import {
   Sparkles,
   FileText,
@@ -112,67 +114,97 @@ export default function Home() {
     setPdfFile(file);
     setFilename(name);
 
-    // Progress sequence
     setProgress({
       step: "uploading",
-      message: "Uploading PDF document...",
+      message: "Analyzing document...",
       percent: 15,
     });
 
     try {
-      const formData = new FormData();
-      formData.append("file", file, name);
-      formData.append("useAi", options.useAi ? "true" : "false");
-      if (options.apiKey) formData.append("apiKey", options.apiKey);
-      formData.append("useOcr", options.useOcr);
+      let extractedQuestions: MCQQuestion[] = [];
+      let computedStats: ExtractionStats = {
+        totalQuestions: 0,
+        answeredCount: 0,
+        unansweredCount: 0,
+        needsReviewCount: 0,
+        totalPages: 1,
+        isOcrUsed: false,
+      };
 
-      // Simulating stage feedback
-      const timer1 = setTimeout(() => {
-        setProgress({
-          step: "extracting",
-          message: "Extracting text and analyzing page layout...",
-          percent: 35,
-        });
-      }, 700);
-
-      const timer2 = setTimeout(() => {
-        setProgress({
-          step: "detecting_questions",
-          message: "Detecting questions, Roman & Bengali numbering...",
-          percent: 55,
-        });
-      }, 1600);
-
-      const timer3 = setTimeout(() => {
-        setProgress({
-          step: "detecting_options",
-          message: "Parsing options A, B, C, D and Bengali ক, খ, গ, ঘ...",
-          percent: 75,
-        });
-      }, 2400);
-
-      const timer4 = setTimeout(() => {
-        setProgress({
-          step: "detecting_answers",
-          message: "Scanning inline answers and document answer keys...",
-          percent: 90,
-        });
-      }, 3100);
-
-      const response = await fetch("/api/extract", {
-        method: "POST",
-        body: formData,
+      // Client-side extraction directly in the browser handles files up to 150MB
+      // without server upload limits (eliminates 413 Request Entity Too Large).
+      setProgress({
+        step: "extracting",
+        message: "Reading PDF pages in browser...",
+        percent: 25,
       });
 
-      clearTimeout(timer1);
-      clearTimeout(timer2);
-      clearTimeout(timer3);
-      clearTimeout(timer4);
+      const arrayBuffer = await file.arrayBuffer();
+      const clientRes = await extractTextFromPDFClient(arrayBuffer, (curr, total) => {
+        setProgress({
+          step: "extracting",
+          message: `Extracting text: page ${curr} of ${total}...`,
+          percent: Math.min(80, Math.round(25 + (curr / total) * 55)),
+        });
+      });
 
-      const data = await response.json();
+      if (!clientRes.success) {
+        throw new Error(clientRes.error || "Failed to extract text from PDF.");
+      }
 
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || "Failed to extract questions from PDF.");
+      // If AI extraction is requested, send lightweight JSON text to /api/extract
+      if (options.useAi && (options.apiKey || process.env.NEXT_PUBLIC_HAS_AI)) {
+        setProgress({
+          step: "detecting_answers",
+          message: "Enhancing extraction with AI model...",
+          percent: 85,
+        });
+
+        try {
+          const aiRes = await fetch("/api/extract", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              fullText: clientRes.fullText,
+              pages: clientRes.pages,
+              totalPages: clientRes.totalPages,
+              useAi: true,
+              apiKey: options.apiKey,
+            }),
+          });
+
+          const contentType = aiRes.headers.get("content-type") || "";
+          if (aiRes.ok && contentType.includes("application/json")) {
+            const aiData = await aiRes.json();
+            if (aiData.success && aiData.questions?.length > 0) {
+              extractedQuestions = aiData.questions;
+              computedStats = aiData.stats;
+            }
+          } else {
+            console.warn("AI extraction route returned non-200 or non-JSON, falling back to local engine");
+          }
+        } catch (aiErr) {
+          console.warn("AI extraction error, falling back to local parser:", aiErr);
+        }
+      }
+
+      // Fallback or default deterministic MCQ parser
+      if (extractedQuestions.length === 0) {
+        setProgress({
+          step: "detecting_questions",
+          message: "Parsing questions, options, and answer keys...",
+          percent: 90,
+        });
+
+        extractedQuestions = parseMCQDocument(clientRes.pages, clientRes.fullText);
+        computedStats = {
+          totalQuestions: extractedQuestions.length,
+          answeredCount: extractedQuestions.filter((q) => q.status === "answered").length,
+          unansweredCount: extractedQuestions.filter((q) => q.status === "missing_answer").length,
+          needsReviewCount: extractedQuestions.filter((q) => q.confidence === "needs-review").length,
+          totalPages: clientRes.totalPages,
+          isOcrUsed: clientRes.isScanned,
+        };
       }
 
       setProgress({
@@ -180,16 +212,6 @@ export default function Home() {
         message: "MCQ extraction completed successfully!",
         percent: 100,
       });
-
-      const extractedQuestions: MCQQuestion[] = data.questions || [];
-      const computedStats: ExtractionStats = data.stats || {
-        totalQuestions: extractedQuestions.length,
-        answeredCount: extractedQuestions.filter((q) => q.status === "answered").length,
-        unansweredCount: extractedQuestions.filter((q) => q.status === "missing_answer").length,
-        needsReviewCount: extractedQuestions.filter((q) => q.confidence === "needs-review").length,
-        totalPages: data.totalPages || 1,
-        isOcrUsed: data.isScanned || false,
-      };
 
       setQuestions(extractedQuestions);
       setStats(computedStats);
