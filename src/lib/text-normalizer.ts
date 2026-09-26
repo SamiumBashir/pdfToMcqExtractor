@@ -96,7 +96,7 @@ export function normalizeExtractedText(text: string): string {
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n");
 
-  // Remove common page number artifacts like "Page 1 of 12" or "- 1 -" or "Page 1"
+  // Clean common page number artifacts
   cleaned = cleaned.replace(/^\s*(?:page|Page|পৃষ্ঠা)\s*[:.-]?\s*[\d০-৯]+(?:\s*(?:of|এর|\/)\s*[\d০-৯]+)?\s*$/gim, "");
   cleaned = cleaned.replace(/^\s*[-–—]\s*[\d০-৯]+\s*[-–—]\s*$/gm, "");
 
@@ -109,7 +109,96 @@ export function normalizeExtractedText(text: string): string {
     .map((line) => line.trim())
     .join("\n");
 
+  // If text exhibits Bijoy font corruption signatures, apply heuristic repairs
+  if (isScrambledBijoyText(cleaned)) {
+    cleaned = repairMangledBengaliText(cleaned);
+  }
+
   return cleaned.trim();
+}
+
+/**
+ * Detects if extracted text exhibits broken Bijoy/ANSI font encoding patterns common in
+ * Bangladeshi exam guidebooks (e.g. Job's Password, BCS Solution, MP3) when extracted
+ * without proper CMap decoding.
+ */
+export function isScrambledBijoyText(text: string): boolean {
+  if (!text) return false;
+
+  const suspiciousPatterns = [
+    /থকানরি/i,
+    /যকোয়/i,
+    /রবশ্ব/i,
+    /রিবস/i,
+    /রনউ/i,
+    /জারসং/i,
+    /সদি\s*দপ্তি/i,
+    /প্রািীন/i,
+    /শতয/i,
+    /খলাকসা/i,
+    /খলাকী/i,
+    /বযা\s*যা/i,
+    /🗲/,
+    /\bউ\.\s*[ক-ঘA-D🗲]\s*বযা\s*যা/i,
+  ];
+
+  let matches = 0;
+  for (const pattern of suspiciousPatterns) {
+    if (pattern.test(text)) {
+      matches++;
+    }
+  }
+
+  return matches >= 2;
+}
+
+/**
+ * Heuristically repairs common broken Bijoy/ANSI Bengali word artifacts from legacy PDF fonts.
+ */
+export function repairMangledBengaliText(text: string): string {
+  if (!text) return "";
+
+  return text
+    // Normalize corrupted glyphs
+    .replace(/🗲/g, "গ")
+    // Fix common corrupted phrases from Bijoy font mapping
+    .replace(/থকানরি\s+শুদ্ধ\s+বাক্য\?/g, "কোনটি শুদ্ধ বাক্য?")
+    .replace(/থকানরি/g, "কোনটি")
+    .replace(/যকোয়/g, "কোথায়")
+    .replace(/রবশ্ব/g, "বিশ্ব")
+    .replace(/রিবস/g, "দিবস")
+    .replace(/রনউইয়কড/g, "নিউইয়র্ক")
+    .replace(/জারসংঘমি/g, "জাতিসংঘের")
+    .replace(/জারসংঘের/g, "জাতিসংঘের")
+    .replace(/জারসংঘ/g, "জাতিসংঘ")
+    .replace(/সদি\s+দপ্তি/g, "সদর দপ্তর")
+    .replace(/সদি/g, "সদর")
+    .replace(/দপ্তি/g, "দপ্তর")
+    .replace(/খলাকসারহশতযর/g, "লোকসাহিত্যের")
+    .replace(/খলাকসারহত্য/g, "লোকসাহিত্য")
+    .replace(/প্রািীনতম/g, "প্রাচীনতম")
+    .replace(/প্রািীন/g, "প্রাচীন")
+    .replace(/রনেন্থন/g, "নিদর্শন")
+    .replace(/খলাকীরত/g, "লোকগীতি")
+    .replace(/রেভিয়ান/g, "জারিগান")
+    .replace(/রেড়িয়ান/g, "জারিগান")
+    .replace(/বযা\s*যা\s*:/g, "বলা যায়:")
+    .replace(/বযা\s*যা/g, "বলা যায়")
+    .replace(/স\s*ূত্র\s*০ঃ/g, "সূত্র:")
+    .replace(/স\s*ূত্র/g, "সূত্র")
+    .replace(/বইময়ি/g, "বইয়ের")
+    .replace(/পৃষ্ঠ\s*া/g, "পৃষ্ঠা")
+    .replace(/ধশমথর/g, "গ্রীষ্মের")
+    .replace(/কষ্ণো/g, "কৃষ্ণ")
+    .replace(/বাতাপস/g, "বাতাসে")
+    .replace(/নশি/g, "নাশি")
+    .replace(/খতল/g, "খেলে")
+    .replace(/পাওয়া\s*র\s*ীয়/g, "পাওয়ার যোগ্য")
+    .replace(/আন্তজযারতক/g, "আন্তর্জাতিক")
+    .replace(/রবশরাসংঘ/g, "বিশ্বসংঘ")
+    .replace(/রপ্নর\s*০/g, "নম্বর")
+    .replace(/রনেন্ধন/g, "নিবন্ধন")
+    .replace(/অ\s*নুষঙ্গ/g, "অনুষঙ্গ");
 }
 
 /**

@@ -1,5 +1,10 @@
 import { PageTextData } from "./pdf-parser";
-import { normalizeExtractedText } from "./text-normalizer";
+import {
+  normalizeExtractedText,
+  isScrambledBijoyText,
+  repairMangledBengaliText,
+} from "./text-normalizer";
+import { performOcr } from "./ocr";
 
 export interface ClientExtractionResult {
   success: boolean;
@@ -7,17 +12,25 @@ export interface ClientExtractionResult {
   pages: PageTextData[];
   fullText: string;
   isScanned: boolean;
+  isBijoyScrambled?: boolean;
   error?: string;
+}
+
+export interface ClientExtractionOptions {
+  forceOcr?: boolean;
+  lang?: string;
 }
 
 /**
  * Extracts text from a PDF Buffer/Uint8Array directly inside the browser.
  * This completely bypasses server body size limits (e.g. 413 Request Entity Too Large),
  * allowing documents up to 150MB+ to be parsed with zero upload lag.
+ * Supports on-demand high-accuracy Tesseract.js OCR rendering for scanned or Bijoy-encoded PDFs.
  */
 export async function extractTextFromPDFClient(
   pdfBuffer: ArrayBuffer | Uint8Array,
-  onProgress?: (current: number, total: number) => void
+  onProgress?: (current: number, total: number, message?: string) => void,
+  options?: ClientExtractionOptions
 ): Promise<ClientExtractionResult> {
   try {
     const pdfjs = await import("pdfjs-dist");
@@ -52,38 +65,74 @@ export async function extractTextFromPDFClient(
 
     const pages: PageTextData[] = [];
     let totalChars = 0;
+    let isBijoyScrambled = false;
 
     for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-      onProgress?.(pageNum, totalPages);
+      onProgress?.(
+        pageNum,
+        totalPages,
+        options?.forceOcr
+          ? `Running Bengali OCR on page ${pageNum} of ${totalPages}...`
+          : `Extracting page ${pageNum} of ${totalPages}...`
+      );
 
       const page = await pdfDoc.getPage(pageNum);
-      const textContent = await page.getTextContent();
+      let pageRawText = "";
 
-      let lastY: number | null = null;
-      const lines: string[] = [];
-      let currentLine = "";
-
-      for (const item of textContent.items) {
-        if (!("str" in item)) continue;
-        const textItem = item as { str: string; transform?: number[] };
-        const currentY = textItem.transform ? textItem.transform[5] : null;
-
-        if (lastY !== null && currentY !== null && Math.abs(currentY - lastY) > 5) {
-          if (currentLine.trim()) {
-            lines.push(currentLine.trim());
+      // 1. If forceOcr requested, render canvas and run Tesseract OCR with Bengali language model
+      if (options?.forceOcr && typeof window !== "undefined") {
+        try {
+          const viewport = page.getViewport({ scale: 2.0 });
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            await page.render({ canvasContext: ctx, viewport } as any).promise;
+            const dataUrl = canvas.toDataURL("image/png");
+            pageRawText = await performOcr(dataUrl, options.lang || "ben+eng");
           }
-          currentLine = textItem.str;
-        } else {
-          currentLine += (currentLine ? " " : "") + textItem.str;
+        } catch (ocrErr) {
+          console.warn(`OCR rendering failed for page ${pageNum}, using text stream:`, ocrErr);
         }
-        lastY = currentY;
       }
 
-      if (currentLine.trim()) {
-        lines.push(currentLine.trim());
+      // 2. If OCR was not forced or yielded empty, extract from PDF text content stream
+      if (!pageRawText) {
+        const textContent = await page.getTextContent();
+        let lastY: number | null = null;
+        const lines: string[] = [];
+        let currentLine = "";
+
+        for (const item of textContent.items) {
+          if (!("str" in item)) continue;
+          const textItem = item as { str: string; transform?: number[] };
+          const currentY = textItem.transform ? textItem.transform[5] : null;
+
+          if (lastY !== null && currentY !== null && Math.abs(currentY - lastY) > 5) {
+            if (currentLine.trim()) {
+              lines.push(currentLine.trim());
+            }
+            currentLine = textItem.str;
+          } else {
+            currentLine += (currentLine ? " " : "") + textItem.str;
+          }
+          lastY = currentY;
+        }
+
+        if (currentLine.trim()) {
+          lines.push(currentLine.trim());
+        }
+
+        pageRawText = lines.join("\n");
       }
 
-      const pageRawText = lines.join("\n");
+      // Detect and heuristically repair Bijoy/ANSI font encoding corruptions
+      if (isScrambledBijoyText(pageRawText)) {
+        isBijoyScrambled = true;
+        pageRawText = repairMangledBengaliText(pageRawText);
+      }
+
       const normalizedPageText = normalizeExtractedText(pageRawText);
       const charCount = normalizedPageText.replace(/\s+/g, "").length;
       totalChars += charCount;
@@ -99,7 +148,7 @@ export async function extractTextFromPDFClient(
       .map((p) => `--- PAGE ${p.pageNumber} ---\n${p.text}`)
       .join("\n\n");
     const avgCharsPerPage = totalPages > 0 ? totalChars / totalPages : 0;
-    const isScanned = avgCharsPerPage < 25;
+    const isScanned = avgCharsPerPage < 25 || options?.forceOcr === true;
 
     return {
       success: true,
@@ -107,6 +156,7 @@ export async function extractTextFromPDFClient(
       pages,
       fullText,
       isScanned,
+      isBijoyScrambled,
     };
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);

@@ -233,6 +233,28 @@ export function PdfUploader({
         </div>
       )}
 
+      {/* Bengali Font & OCR Quick Helper Banner */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/60 dark:border-blue-800/40 text-xs">
+        <div className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+          <Cpu className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
+          <span>
+            <strong>বাংলা বই / জব সলিউশন PDF:</strong> ফন্ট ভাঙা বা এলোমেলো দেখালে <strong>Force OCR</strong> মোড সিলেক্ট করুন।
+          </span>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">OCR মোড:</span>
+          <select
+            value={useOcr}
+            onChange={(e) => setUseOcr(e.target.value as "auto" | "force" | "none")}
+            className="px-2.5 py-1 rounded-lg border border-blue-300 dark:border-blue-700 bg-white dark:bg-slate-800 text-xs font-semibold text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
+          >
+            <option value="auto">Auto (স্বয়ংক্রিয়)</option>
+            <option value="force">Force OCR (নিখুঁত বাংলা)</option>
+            <option value="none">Text Only (সাধারণ)</option>
+          </select>
+        </div>
+      </div>
+
       {/* Advanced Extraction Options Toggle */}
       <div className="border border-slate-200 dark:border-slate-800 rounded-xl p-4 bg-white/50 dark:bg-slate-900/50 backdrop-blur-xs">
         <button
@@ -242,7 +264,7 @@ export function PdfUploader({
         >
           <span className="flex items-center gap-1.5">
             <Cpu className="w-4 h-4 text-blue-500" />
-            Extraction Options (OCR & AI Assistance)
+            Advanced Settings (AI Assistance &amp; API Keys)
           </span>
           <span className="text-blue-600 dark:text-blue-400 lowercase text-xs">
             {showAdvanced ? "hide" : "configure"}

@@ -35,6 +35,7 @@ import {
   Sparkles,
   FileText,
   AlertCircle,
+  AlertTriangle,
   Eye,
   EyeOff,
   Layers,
@@ -46,6 +47,7 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import confetti from "canvas-confetti";
+import { isScrambledBijoyText } from "@/lib/text-normalizer";
 
 const STORAGE_KEY = "pdf-mcq-saved-session";
 
@@ -62,6 +64,7 @@ export default function Home() {
   const [currentQuestions, setCurrentQuestions] = useState<MCQQuestion[]>([]);
   const [stats, setStats] = useState<ExtractionStats | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isBijoyDetected, setIsBijoyDetected] = useState(false);
   const [progress, setProgress] = useState<ExtractionProgress>({
     step: "idle",
     message: "",
@@ -153,13 +156,17 @@ export default function Home() {
       });
 
       const arrayBuffer = await file.arrayBuffer();
-      const clientRes = await extractTextFromPDFClient(arrayBuffer, (curr, total) => {
-        setProgress({
-          step: "extracting",
-          message: `Extracting page ${curr} of ${total}...`,
-          percent: Math.min(80, Math.round(25 + (curr / total) * 55)),
-        });
-      });
+      const clientRes = await extractTextFromPDFClient(
+        arrayBuffer,
+        (curr, total, msg) => {
+          setProgress({
+            step: options.useOcr === "force" ? "ocr" : "extracting",
+            message: msg || `Extracting page ${curr} of ${total}...`,
+            percent: Math.min(85, Math.round(25 + (curr / total) * 60)),
+          });
+        },
+        { forceOcr: options.useOcr === "force", lang: "ben+eng" }
+      );
 
       if (!clientRes.success) {
         throw new Error(clientRes.error || "Failed to extract text from PDF.");
@@ -226,6 +233,11 @@ export default function Home() {
 
       setCurrentQuestions(extractedQuestions);
       setStats(computedStats);
+
+      const hasBijoyPatterns =
+        clientRes.isBijoyScrambled ||
+        extractedQuestions.some((q) => isScrambledBijoyText(q.question));
+      setIsBijoyDetected(Boolean(hasBijoyPatterns && options.useOcr !== "force"));
 
       // Register Document & Merge into Question Bank
       const docRecord = registerDocument(
@@ -348,6 +360,7 @@ export default function Home() {
       setPdfFile(null);
       setSelectedQuestionId(null);
       setError(null);
+      setIsBijoyDetected(false);
       localStorage.removeItem(STORAGE_KEY);
       setActiveTab("upload");
       showToast("Ready for New PDF", "Upload a document to extract questions", "info");
@@ -515,6 +528,39 @@ export default function Home() {
               <div className="space-y-6">
                 {/* Stats Card */}
                 {stats && <StatsCard stats={stats} />}
+
+                {/* Bijoy Font Encoding Warning Banner with 1-Click OCR Repair */}
+                {isBijoyDetected && (
+                  <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="font-bold text-amber-900 dark:text-amber-100 text-sm">
+                          পুরোনো বিজয় / ANSI ফন্ট শনাক্ত হয়েছে (Bijoy Font Encoding Detected)
+                        </div>
+                        <div className="text-xs text-amber-700 dark:text-amber-300 mt-1 leading-relaxed">
+                          এই PDF-টিতে ইউনিকোডের বদলে পুরোনো বিজয় (SutonnyMJ) ফন্ট রয়েছে, যার কারণে সাধারণ টেক্সট এক্সট্রাকশনে অক্ষরগুলো বিকৃত (যেমন &quot;থকানরি&quot; বা &quot;রবশ্ব&quot;) হতে পারে।
+                          ১০০% নিখুঁত করতে নিচের বাটনে ক্লিক করে <strong>OCR মোডে পুনরায় এক্সট্র্যাক্ট</strong> করুন।
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (pdfFile) {
+                          handleStartExtraction(pdfFile, filename, {
+                            useAi: false,
+                            useOcr: "force",
+                          });
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs shadow-md transition-all whitespace-nowrap self-start sm:self-auto cursor-pointer"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      OCR দিয়ে ফিক্স করুন (Fix with OCR)
+                    </button>
+                  </div>
+                )}
 
                 {/* Toolbar */}
                 <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xs">
