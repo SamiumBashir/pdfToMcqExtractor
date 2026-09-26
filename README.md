@@ -1,190 +1,188 @@
-# PDF MCQ Extractor
+# Production-Ready PDF → Question Bank Extraction & Management Platform
 
-A production-ready web application built with **Next.js (App Router)**, **TypeScript**, and **Tailwind CSS** that automatically analyzes examination and question paper PDFs to extract multiple-choice questions (MCQs), options (A, B, C, D, E / ক, খ, গ, ঘ, ঙ), and correct answers with high accuracy.
+[![Next.js](https://img.shields.io/badge/Next.js-16.3-black?style=flat&logo=next.js)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue?style=flat&logo=typescript)](https://www.typescriptlang.org/)
+[![Tailwind CSS](https://img.shields.io/badge/TailwindCSS-v4-38bdf8?style=flat&logo=tailwind-css)](https://tailwindcss.com/)
+[![OCR Engine](https://img.shields.io/badge/OCR-Tesseract.js-orange)](https://github.com/naptha/tesseract.js)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Supports both **English** and **Bengali (বাংলা)** question papers, text-based and scanned PDFs (via **Tesseract.js OCR**), inline answers, separate answer keys, editable question cards, and 1-click export to **Excel (.xlsx)**, **Word (.docx)**, **CSV**, **JSON**, and **TXT**.
-
----
-
-## 🌟 Key Features
-
-1. **Dual Engine PDF Processing & OCR Fallback**:
-   - Primary: High-speed native PDF parsing with page tracking and line reconstruction.
-   - OCR Engine: Powered by **Tesseract.js** for scanned documents, image-based PDFs, and photocopied test papers (supports `eng+ben` combined language pack).
-   - Scanned PDF detection: Automatically detects low-density or image-only documents.
-
-2. **Accurate MCQ Detection Engine**:
-   - **English Question Formats**:
-     - `1. What is 2 + 2?`
-     - `1) What is 2 + 2?`
-     - `(1) What is 2 + 2?`
-     - `Q1. What is 2 + 2?`
-     - `Question 1: What is 2 + 2?`
-   - **Bengali Question Formats**:
-     - `১। বাংলাদেশের রাজধানী কোনটি?`
-     - `১. প্রশ্ন...`
-     - `১) প্রশ্ন...`
-     - `প্রশ্ন ১: ...`
-   - **Option Formats**:
-     - Standard: `A.`, `B.`, `C.`, `D.`, `E.`
-     - Parentheses: `(a)`, `(b)`, `(c)`, `(d)` or `A)`, `B)`, `C)`, `D)`
-     - Bengali Options: `ক)`, `খ)`, `গ)`, `ঘ)`, `ঙ)` or `ক.`, `খ.`
-     - Single-line, multi-line, and inline options (e.g. `A. 3  B. 4  C. 5  D. 6`).
-
-3. **Intelligent Answer Detection (Zero Hallucination)**:
-   - **Inline Answers**: Detects patterns such as `Answer: B`, `Ans: (b)`, `Correct Answer: C`, `Sol: B`, `উত্তর: খ`, `সঠিক উত্তর: ক`.
-   - **Separate Answer Key Section**: Detects answer key sections at the end of the document (e.g. `Answer Key: 1-C, 2-B, 3-A` or `১: খ, ২: গ`) and associates each key with its question number.
-   - **Confidence Metric**: Questions are classified into `High Confidence`, `Medium Confidence`, or `Needs Review`.
-   - **No Invented Answers**: If an answer is not confidently detected in the text or key, it is labeled as **"Answer not detected (Needs Review)"** instead of guessing.
-
-4. **Split-Screen PDF Preview**:
-   - Left Panel: Embedded PDF viewer with page navigation, zoom controls, and jump-to-page when clicking an extracted question.
-   - Right Panel: Interactive question bank dashboard with search, filter tabs, edit tools, and copy actions.
-
-5. **In-Place Question Editing**:
-   - Edit Question statement, Option A, B, C, D, or add Option E.
-   - Live answer key selection and immediate state synchronization.
-
-6. **Quick Copy & Full Suite Export**:
-   - **Copy Question**: Copies only the question text.
-   - **Copy Options**: Copies all options.
-   - **Copy Answer**: Copies the detected answer.
-   - **Copy Full**: Copies formatted question, options, and answer.
-   - **Copy All**: Copies all questions in formatted text.
-   - **Download Excel (.xlsx)**: Styled spreadsheet with columns for Question No, Question, Options A-E, Correct Answer, Confidence, and Status.
-   - **Download Word (.docx)**: Professional examination document with bold question headings, indented options, and colored answer keys.
-   - **Download CSV**: Includes UTF-8 Byte Order Mark (`\uFEFF`) ensuring Bengali characters display properly in Microsoft Excel and Google Sheets.
-   - **Download JSON**: Structured machine-readable schema.
-   - **Download TXT**: Plain text question bank.
-
-7. **Search & Dynamic Filtering**:
-   - Search by keyword in question prompt or option text, or jump to question number.
-   - Filter pills with live counts: `All`, `Answered`, `Answer Missing`, `Needs Review`, `High Confidence`.
-
-8. **AI-Assisted Extraction Layer (Optional)**:
-   - Support for Google Gemini API (`GEMINI_API_KEY`) and OpenAI API (`OPENAI_API_KEY`) for processing complex, messy layouts with schema validation.
-
-9. **Dark Mode & Modern SaaS Aesthetics**:
-   - Light and dark themes with persistent preference.
-   - Glassmorphism, subtle animations, progress checklists, and confetti feedback.
-
-10. **1-Click Built-in Sample Exams**:
-    - Pre-packaged sample exam generators for immediate 1-click testing:
-      - `General Science (Inline Answers)`
-      - `Aptitude Test (Separate Answer Key)`
-      - `BCS Model Test (Bangladesh Affairs)`
+A high-performance, production-ready platform designed to ingest educational PDFs, question papers, and exam materials, extract **ONLY** questions, options, and correct answers while ignoring all document noise (chapter headings, book titles, page numbers, explanations, copyright, author notices), and manage a clean, reusable question database with **Vector SVG generation**, **Standard CSV export/import**, and a comprehensive **Question Bank SaaS Dashboard**.
 
 ---
 
-## 🏗️ Project Architecture
+## 🚀 Key Architectural Capabilities
+
+### 1. High-Fidelity Noise-Filtering Extraction (Zero Noise)
+Intelligently parses question blocks while discarding:
+- Book & Chapter Titles (`Chapter 1`, `অধ্যায় ৩`)
+- Headers, Footers, Page numbers (`Page 12`, `পৃষ্ঠা ১২`, `[ 12 ]`, `- 12 -`)
+- Explanations & Descriptions (`ব্যাখ্যা: ...`, `Explanation: ...`, `সমাধান: ...`)
+- Copyright & Publisher Notices (`Copyright © 2026`, `All Rights Reserved`)
+- Author Information (`Author: ...`, `লেখক: ...`)
+- Exam Instructions (`Important Notice: Calculators not allowed...`)
+- Decorative Dividers (`---`, `===`, `***`)
+
+### 2. Native Multi-Language Support (English & Bengali)
+- **Question Numbering**:
+  - English: `1. `, `1) `, `(1) `, `Q1. `, `Question 1: `
+  - Bengali: `১। `, `১. `, `১) `, `(১) `, `প্রশ্ন ১: `
+- **Option Formats**:
+  - English: `A.`, `B.`, `C.`, `D.`, `E.` / `(a)`, `(b)`, `(c)`, `(d)` / `A)`, `B)`, `C)`, `D)`
+  - Bengali: `ক.`, `খ.`, `গ.`, `ঘ.`, `ঙ.` / `ক)`, `খ)`, `গ)`, `ঘ)`
+  - Normalized internally into uppercase standard keys (`A`, `B`, `C`, `D`, `E`).
+- **Multi-Line Questions**: Complete multi-sentence prompts are preserved as a single question block without breaking across lines.
+
+### 3. Zero-Hallucination Answer Detection & Review Workflow
+- **Inline Answers**: Scans patterns like `Answer: B`, `Ans: (b)`, `Correct Answer: C`, `উত্তর: খ`, `সঠিক উত্তর: ক`.
+- **Standalone Answer Key Mapping**: Identifies answer keys at the bottom or end of the document (e.g. `1-B, 2-C, 3-A` or `১: খ, ২: গ`) and maps them to their corresponding question numbers.
+- **Strict Anti-Hallucination Rule**: If an answer is not confidently detected in the text or key, it is marked as `null` with status `needs_review` / `missing_answer` — answers are **never** invented.
+
+### 4. Vector SVG Generation Engine & Visual SVG Studio
+- **Two-Column Vector SVG Layout**:
+  - **Left Section**: Question badge, multi-line wrapped question statement, and styled option cards.
+  - **Right Section**: Clear separation of detected answer with verification badges and optional explanation.
+- **Customizable Styling**:
+  - Themes: Light, Modern Dark, Midnight Navy, Sepia Classic, Minimalist Monochrome.
+  - Typography: Custom fonts, font sizes, line heights, border radius, watermarks.
+- **Single & Bulk Downloads**: Download individual questions as SVG, or bundle hundreds of questions into a ZIP archive with 1 click using `jszip`.
+
+### 5. Standard CSV Export & Import Contract (Section 46 & 18)
+- **Exact Section 46 Header Structure**:
+  ```csv
+  question,option_a,option_b,option_c,option_d,answer
+  "বাংলাদেশের রাজধানী কোনটি?","চট্টগ্রাম","ঢাকা","রাজশাহী","খুলনা","B"
+  ```
+- **UTF-8 BOM (`\uFEFF`)**: Flawless Bengali script preservation in Microsoft Excel and Google Sheets without encoding corruptions.
+- **Section 18 CSV Import with Validation**: Detailed audit report displaying `Total Rows`, `Valid Rows`, `Invalid Rows`, and `Duplicate Rows`.
+
+### 6. Question Bank & SaaS Dashboard
+- **KPI Metrics**: Total PDFs, Total Questions, Approved Questions, Pending Review, Low Confidence, and Category breakdown.
+- **Duplicate Detection**: Fast string normalization and matching that marks potential duplicate questions with options to `Keep` or `Delete Duplicate`.
+- **Advanced Filtering & Search**: Instant debounced search across question prompt, options, and answers, filterable by Status, Confidence, and Category.
+- **Bulk Actions**: Select All, Bulk Approve, Bulk Delete, Bulk Export to CSV, Bulk Vector SVG Bundle download.
+
+---
+
+## 📁 System Architecture & Directory Structure
 
 ```
-scrapper/
 ├── src/
 │   ├── app/
 │   │   ├── api/
-│   │   │   ├── extract/route.ts      # Multipart PDF upload, parsing & AI pipeline
-│   │   │   └── ocr/route.ts          # Tesseract.js image-based OCR route
-│   │   ├── globals.css               # Design system & dark mode variables
-│   │   ├── layout.tsx                # App root layout with ToastProvider
-│   │   └── page.tsx                  # Main interactive application dashboard
+│   │   │   ├── extract/route.ts              # PDF extraction endpoint
+│   │   │   ├── ocr/route.ts                  # Tesseract OCR fallback endpoint
+│   │   │   ├── pdfs/
+│   │   │   │   ├── upload/route.ts           # POST /api/pdfs/upload (with size validation)
+│   │   │   │   ├── [id]/process/route.ts     # POST /api/pdfs/:id/process
+│   │   │   │   └── [id]/status/route.ts      # GET /api/pdfs/:id/status
+│   │   │   └── questions/
+│   │   │       ├── route.ts                  # GET /api/questions (filter, search, paginate)
+│   │   │       ├── [id]/route.ts             # GET, PUT, DELETE /api/questions/:id
+│   │   │       ├── [id]/approve/route.ts     # PATCH /api/questions/:id/approve
+│   │   │       ├── bulk-approve/route.ts     # PATCH /api/questions/bulk-approve
+│   │   │       ├── export/csv/route.ts       # GET /api/questions/export/csv (Section 46 contract)
+│   │   │       └── import/csv/route.ts       # POST /api/questions/import/csv (Section 18 validator)
+│   │   ├── layout.tsx                        # Global theme provider and header
+│   │   └── page.tsx                          # Unified SaaS portal (Dashboard, Extractor, Question Bank, SVG Studio)
 │   ├── components/
-│   │   ├── extraction-progress.tsx   # Multi-step progress checklist animation
-│   │   ├── export-menu.tsx           # Dropdown for Excel, Word, CSV, JSON, TXT
-│   │   ├── navbar.tsx                # Branding, upload-another button, theme switch
-│   │   ├── pdf-preview.tsx           # Split-screen PDF viewer with page navigation
-│   │   ├── pdf-uploader.tsx          # Drag-and-drop uploader + sample test drive
-│   │   ├── question-card.tsx         # Question card with badges, options & copy buttons
-│   │   ├── question-editor.tsx       # Live question & option editor modal
-│   │   ├── search-bar.tsx            # Search input and filter pills with live counts
-│   │   ├── stats-card.tsx            # Dashboard metric summary cards
-│   │   ├── theme-toggle.tsx          # Light / Dark mode toggle
-│   │   └── toast.tsx                 # Toast notifications
+│   │   ├── dashboard-view.tsx                # SaaS KPI cards, stats, quick shortcuts
+│   │   ├── question-bank-view.tsx            # Full-featured Question Bank table with bulk actions
+│   │   ├── svg-editor-modal.tsx              # Interactive Visual SVG Studio & previewer
+│   │   ├── manual-question-modal.tsx         # Manual question creator modal
+│   │   ├── csv-import-modal.tsx              # CSV Import & row validation modal
+│   │   ├── pdf-uploader.tsx                  # Drag-and-Drop PDF uploader with progress
+│   │   ├── pdf-preview.tsx                   # Interactive PDF document viewer
+│   │   ├── question-card.tsx                 # Question review card with answer detection
+│   │   ├── question-editor.tsx               # In-place modal editor for questions & options
+│   │   └── export-menu.tsx                   # Multi-format exporter (Excel, Word, CSV, JSON, TXT, SVG ZIP)
 │   ├── lib/
-│   │   ├── ai-extractor.ts           # Optional Gemini / OpenAI LLM parser
-│   │   ├── answer-parser.ts          # Inline answers & separate answer key matcher
-│   │   ├── export.ts                 # XLSX, DOCX, CSV with BOM, JSON, TXT generator
-│   │   ├── ocr.ts                    # Tesseract.js OCR handler
-│   │   ├── pdf-parser.ts             # Dual-engine page-by-page text extractor
-│   │   ├── question-parser.ts        # English, Bengali & inline question/option parser
-│   │   ├── samples.ts                # 1-click sample exam paper generators
-│   │   └── text-normalizer.ts        # Unicode Bengali-English digits & option normalizer
+│   │   ├── question-parser.ts                # Robust noise-filtering MCQ parsing engine
+│   │   ├── answer-parser.ts                  # Inline answers & standalone answer key mapper
+│   │   ├── csv-manager.ts                    # Section 46 CSV generator & Section 18 CSV parser
+│   │   ├── question-store.ts                 # Client-side persistent storage and filter engine
+│   │   ├── server-store.ts                   # Server-side singleton store for REST APIs
+│   │   ├── text-normalizer.ts                # Bengali/English numerals & option normalizer
+│   │   ├── pdf-parser.ts                     # High-density text extractor
+│   │   ├── svg/
+│   │   │   └── svg-generator.ts              # Programmatic vector SVG layout & ZIP generator
+│   │   └── ocr/
+│   │       └── ocr-provider.ts               # Pluggable OCR engine (Tesseract.js, Google Vision, Cloud AI)
 │   └── types/
-│       └── question.ts               # Core TypeScript models and interfaces
-├── tests/
-│   ├── test-mcq-parser.mts           # Unit test for parsing across multiple formats
-│   ├── test-export.mts               # Unit test for Excel, Word, CSV, JSON exports
-│   ├── test-api-e2e.mts              # End-to-end API test for POST /api/extract
-│   └── test-all-samples-e2e.mts      # End-to-end test for all 3 sample question papers
-├── .env.example                      # Environment variables template
-├── next.config.ts                    # Next.js configuration with serverExternalPackages
-├── package.json                      # Dependencies and scripts
-└── tsconfig.json                     # TypeScript configuration
+│       └── question.ts                       # Complete TypeScript schemas & converters
+└── tests/
+    ├── test-mcq-parser.mts                   # Parser accuracy test
+    ├── test-noise-and-separation.mts         # Section 9 noise rejection & anti-hallucination test
+    ├── test-csv-and-svg.mts                  # Section 46 CSV & Vector SVG engine test
+    ├── test-export.mts                       # Multi-format export test
+    └── test-all-samples-e2e.mts              # End-to-end extraction across sample examination papers
 ```
 
 ---
 
-## 🚀 Getting Started
+## 📋 REST API Reference
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/pdfs/upload` | Upload PDF file (validates MIME and size up to 150MB) |
+| `POST` | `/api/pdfs/:id/process` | Initiate question extraction & parsing pipeline |
+| `GET` | `/api/pdfs/:id/status` | Retrieve processing job progress and step state |
+| `GET` | `/api/questions` | List questions with search, category, status, and pagination |
+| `POST` | `/api/questions` | Create a new question or bulk synchronize questions |
+| `GET` | `/api/questions/:id` | Get details of a single question |
+| `PUT` | `/api/questions/:id` | Update question statement, options, or answer |
+| `DELETE` | `/api/questions/:id` | Permanently remove a question |
+| `PATCH` | `/api/questions/:id/approve` | Approve question and transition status to verified |
+| `PATCH` | `/api/questions/bulk-approve` | Bulk approve an array of question IDs |
+| `GET` | `/api/questions/export/csv` | Download approved questions conforming to Section 46 CSV |
+| `POST` | `/api/questions/import/csv` | Upload and validate CSV conforming to Section 18 |
+
+---
+
+## 🛠️ Getting Started
 
 ### Prerequisites
+- Node.js >= 18.17.0
+- npm or pnpm or yarn
 
-- **Node.js**: v18.0.0 or later (v20+ / v22+ recommended)
-- **npm** or **pnpm** or **yarn**
-
-### Installation
-
-1. Clone or navigate to the repository directory:
-   ```bash
-   cd scrapper
-   ```
-
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-3. (Optional) Set up environment variables:
-   ```bash
-   cp .env.example .env.local
-   ```
-   Add your `GEMINI_API_KEY` or `OPENAI_API_KEY` if you plan to use AI enhancement.
-
-4. Start the development server:
-   ```bash
-   npm run dev
-   ```
-
-5. Open your browser and navigate to:
-   ```
-   http://localhost:3000
-   ```
-
----
-
-## 🧪 Running Tests
-
-The test suite validates parsing across English, Bengali, separate answer keys, and all export formats:
-
+### 1. Clone & Install
 ```bash
-# Run MCQ parsing unit tests
-npx tsx tests/test-mcq-parser.mts
-
-# Run Export generator tests (Excel, Word, CSV with BOM, JSON, TXT)
-npx tsx tests/test-export.mts
-
-# Run End-to-End API test on live server
-npx tsx tests/test-api-e2e.mts
-
-# Run End-to-End test for all sample papers
-npx tsx tests/test-all-samples-e2e.mts
+git clone https://github.com/SamiumBashir/pdfToMcqExtractor.git
+cd pdfToMcqExtractor
+npm install
 ```
 
----
+### 2. Configure Environment Variables
+Copy `.env.example` to `.env.local`:
+```bash
+cp .env.example .env.local
+```
 
-## 📄 Production Build
+Configure keys as needed:
+```env
+# Optional AI & OCR Providers
+OCR_API_KEY=
+AI_API_KEY=
+GEMINI_API_KEY=
 
-To verify type safety and generate the production bundle:
+# File Upload Limit (default: 150MB in bytes)
+MAX_FILE_SIZE=157286400
+```
 
+### 3. Run Development Server
+```bash
+npm run dev
+```
+Open [http://localhost:3000](http://localhost:3000) in your browser.
+
+### 4. Run Test Suite
+```bash
+npx tsx tests/test-noise-and-separation.mts
+npx tsx tests/test-csv-and-svg.mts
+npx tsx tests/test-all-samples-e2e.mts
+npx tsx tests/test-export.mts
+```
+
+### 5. Production Build
 ```bash
 npm run build
 npm run start
@@ -192,14 +190,5 @@ npm run start
 
 ---
 
-## 🔒 Security & Privacy
-
-- **MIME & File Validation**: Uploads are validated strictly for PDF MIME type and size (up to 150MB).
-- **Client & Server Isolation**: API keys provided in extraction options are processed securely in memory and never persisted or exposed.
-- **UTF-8 Encoding & XSS Prevention**: Extracted text is sanitized and normalized; CSV exports prepend a UTF-8 BOM (`\uFEFF`) so spreadsheet software preserves Bengali glyphs safely without executing formulas.
-
----
-
-## 📜 License
-
-MIT License. Designed and built for seamless MCQ examination paper extraction and digitization.
+## 📄 License
+This project is open-source and available under the [MIT License](LICENSE).

@@ -11,6 +11,7 @@ import {
   HelpCircle,
   FileQuestion,
   Check,
+  Sparkles,
 } from "lucide-react";
 import { formatSingleQuestionText } from "@/lib/export";
 import { useToast } from "./toast";
@@ -21,6 +22,7 @@ interface QuestionCardProps {
   onSelect?: (q: MCQQuestion) => void;
   onEdit: (q: MCQQuestion) => void;
   onDelete: (id: string) => void;
+  onOpenSvg?: (q: MCQQuestion) => void;
 }
 
 export function QuestionCard({
@@ -29,6 +31,7 @@ export function QuestionCard({
   onSelect,
   onEdit,
   onDelete,
+  onOpenSvg,
 }: QuestionCardProps) {
   const { showToast } = useToast();
 
@@ -225,6 +228,22 @@ export function QuestionCard({
             <Copy className="w-3 h-3" />
             Copy Full
           </button>
+
+          {/* SVG Studio */}
+          {onOpenSvg && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenSvg(question);
+              }}
+              title="Open in SVG Studio"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 hover:bg-amber-100 text-[11px] font-bold transition-colors ml-1"
+            >
+              <Sparkles className="w-3 h-3 text-amber-500" />
+              SVG
+            </button>
+          )}
 
           {/* Edit */}
           <button

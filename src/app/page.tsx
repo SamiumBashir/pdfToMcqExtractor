@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { Navbar } from "@/components/navbar";
+import { Navbar, PlatformTab } from "@/components/navbar";
 import { PdfUploader } from "@/components/pdf-uploader";
 import { ExtractionProgressView } from "@/components/extraction-progress";
 import { StatsCard } from "@/components/stats-card";
@@ -11,13 +11,26 @@ import { SearchBar, FilterOption } from "@/components/search-bar";
 import { ExportMenu } from "@/components/export-menu";
 import { PdfPreview } from "@/components/pdf-preview";
 import { useToast } from "@/components/toast";
+import { DashboardView } from "@/components/dashboard-view";
+import { QuestionBankView } from "@/components/question-bank-view";
+import { SvgEditorModal } from "@/components/svg-editor-modal";
 import {
   MCQQuestion,
+  StructuredQuestion,
+  DocumentRecord,
   ExtractionStats,
   ExtractionProgress,
+  toStructuredQuestion,
+  toMCQQuestion,
 } from "@/types/question";
 import { extractTextFromPDFClient } from "@/lib/client-pdf-parser";
 import { parseMCQDocument } from "@/lib/question-parser";
+import {
+  loadSavedQuestions,
+  persistQuestions,
+  loadSavedDocuments,
+  registerDocument,
+} from "@/lib/question-store";
 import {
   Sparkles,
   FileText,
@@ -30,15 +43,23 @@ import {
   BookOpen,
   ArrowRight,
   RefreshCw,
+  CheckCircle2,
 } from "lucide-react";
 import confetti from "canvas-confetti";
 
 const STORAGE_KEY = "pdf-mcq-saved-session";
 
 export default function Home() {
+  const [activeTab, setActiveTab] = useState<PlatformTab>("dashboard");
+
+  // Persistent Question Bank state
+  const [allQuestions, setAllQuestions] = useState<StructuredQuestion[]>([]);
+  const [allDocuments, setAllDocuments] = useState<DocumentRecord[]>([]);
+
+  // Current upload session state
   const [pdfFile, setPdfFile] = useState<File | Blob | null>(null);
   const [filename, setFilename] = useState<string>("exam-questions.pdf");
-  const [questions, setQuestions] = useState<MCQQuestion[]>([]);
+  const [currentQuestions, setCurrentQuestions] = useState<MCQQuestion[]>([]);
   const [stats, setStats] = useState<ExtractionStats | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState<ExtractionProgress>({
@@ -49,59 +70,51 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
 
   // Split-screen & Selection state
-  const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(
-    null
-  );
+  const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null);
   const [activePdfPage, setActivePdfPage] = useState<number>(1);
   const [showPdfPreview, setShowPdfPreview] = useState<boolean>(true);
 
-  // Editor Modal
-  const [editingQuestion, setEditingQuestion] = useState<MCQQuestion | null>(
-    null
-  );
+  // Modals
+  const [editingQuestion, setEditingQuestion] = useState<MCQQuestion | null>(null);
+  const [svgStudioTarget, setSvgStudioTarget] = useState<StructuredQuestion | null>(null);
 
-  // Search & Filter
+  // Search & Filter within current extraction review
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilter, setActiveFilter] = useState<FilterOption>("all");
 
   const { showToast } = useToast();
 
-  // Load saved session from localStorage on initial render
+  // Load saved session and persistent question bank on initial render
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
+      const savedBank = loadSavedQuestions();
+      setAllQuestions(savedBank);
+
+      const savedDocs = loadSavedDocuments();
+      setAllDocuments(savedDocs);
+
+      const savedSession = localStorage.getItem(STORAGE_KEY);
+      if (savedSession) {
+        const parsed = JSON.parse(savedSession);
         if (parsed.questions && parsed.questions.length > 0) {
-          setQuestions(parsed.questions);
+          setCurrentQuestions(parsed.questions);
           setStats(parsed.stats || null);
           setFilename(parsed.filename || "saved-mcq.pdf");
         }
       }
+
+      // If bank has questions, start at dashboard; otherwise upload
+      if (savedBank.length === 0 && (!savedSession || JSON.parse(savedSession)?.questions?.length === 0)) {
+        setActiveTab("upload");
+      }
     } catch (e) {
-      console.warn("Failed to load saved session:", e);
+      console.warn("Failed to load initial data:", e);
     }
   }, []);
 
-  // Save changes to localStorage
-  const persistSession = (
-    updatedQuestions: MCQQuestion[],
-    updatedStats: ExtractionStats | null,
-    currentFilename: string
-  ) => {
-    try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          questions: updatedQuestions,
-          stats: updatedStats,
-          filename: currentFilename,
-          updatedAt: new Date().toISOString(),
-        })
-      );
-    } catch (e) {
-      console.warn("Failed to cache session:", e);
-    }
+  const handleUpdateBankQuestions = (updated: StructuredQuestion[]) => {
+    setAllQuestions(updated);
+    persistQuestions(updated);
   };
 
   const handleStartExtraction = async (
@@ -113,10 +126,11 @@ export default function Home() {
     setError(null);
     setPdfFile(file);
     setFilename(name);
+    setActiveTab("upload");
 
     setProgress({
-      step: "uploading",
-      message: "Analyzing document...",
+      step: "analyzing",
+      message: "Analyzing PDF document structure...",
       percent: 15,
     });
 
@@ -131,11 +145,10 @@ export default function Home() {
         isOcrUsed: false,
       };
 
-      // Client-side extraction directly in the browser handles files up to 150MB
-      // without server upload limits (eliminates 413 Request Entity Too Large).
+      // Client-side extraction handles files up to 150MB in browser without 413 error
       setProgress({
         step: "extracting",
-        message: "Reading PDF pages in browser...",
+        message: "Reading PDF pages in browser memory...",
         percent: 25,
       });
 
@@ -143,7 +156,7 @@ export default function Home() {
       const clientRes = await extractTextFromPDFClient(arrayBuffer, (curr, total) => {
         setProgress({
           step: "extracting",
-          message: `Extracting text: page ${curr} of ${total}...`,
+          message: `Extracting page ${curr} of ${total}...`,
           percent: Math.min(80, Math.round(25 + (curr / total) * 55)),
         });
       });
@@ -152,11 +165,11 @@ export default function Home() {
         throw new Error(clientRes.error || "Failed to extract text from PDF.");
       }
 
-      // If AI extraction is requested, send lightweight JSON text to /api/extract
+      // If AI extraction requested, send clean JSON text to /api/extract
       if (options.useAi && (options.apiKey || process.env.NEXT_PUBLIC_HAS_AI)) {
         setProgress({
           step: "detecting_answers",
-          message: "Enhancing extraction with AI model...",
+          message: "Enhancing question detection with AI...",
           percent: 85,
         });
 
@@ -180,19 +193,17 @@ export default function Home() {
               extractedQuestions = aiData.questions;
               computedStats = aiData.stats;
             }
-          } else {
-            console.warn("AI extraction route returned non-200 or non-JSON, falling back to local engine");
           }
         } catch (aiErr) {
-          console.warn("AI extraction error, falling back to local parser:", aiErr);
+          console.warn("AI extraction fallback to deterministic engine:", aiErr);
         }
       }
 
-      // Fallback or default deterministic MCQ parser
+      // Deterministic parsing with strict noise filtering & question isolation
       if (extractedQuestions.length === 0) {
         setProgress({
           step: "detecting_questions",
-          message: "Parsing questions, options, and answer keys...",
+          message: "Isolating questions, options, and answers...",
           percent: 90,
         });
 
@@ -213,9 +224,35 @@ export default function Home() {
         percent: 100,
       });
 
-      setQuestions(extractedQuestions);
+      setCurrentQuestions(extractedQuestions);
       setStats(computedStats);
-      persistSession(extractedQuestions, computedStats, name);
+
+      // Register Document & Merge into Question Bank
+      const docRecord = registerDocument(
+        name,
+        file.size,
+        clientRes.totalPages,
+        extractedQuestions.length,
+        clientRes.isScanned ? "scanned" : "text"
+      );
+      setAllDocuments(loadSavedDocuments());
+
+      const structuredItems = extractedQuestions.map((q) =>
+        toStructuredQuestion(q, docRecord.id, name)
+      );
+      const updatedBank = [...structuredItems, ...allQuestions];
+      setAllQuestions(updatedBank);
+      persistQuestions(updatedBank);
+
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          questions: extractedQuestions,
+          stats: computedStats,
+          filename: name,
+          updatedAt: new Date().toISOString(),
+        })
+      );
 
       if (extractedQuestions.length > 0) {
         confetti({
@@ -225,82 +262,76 @@ export default function Home() {
         });
         showToast(
           "Extraction Complete!",
-          `Extracted ${extractedQuestions.length} questions successfully`,
+          `Extracted ${extractedQuestions.length} questions into Question Bank`,
           "success"
         );
       } else {
         showToast(
           "No Questions Detected",
-          "Try enabling OCR or review document format",
+          "Ensure document contains Multiple Choice Questions (MCQs)",
           "info"
         );
       }
     } catch (err: unknown) {
       console.error("Extraction failed:", err);
-      const msg =
-        err instanceof Error ? err.message : "Failed to process PDF document.";
+      const msg = err instanceof Error ? err.message : "Failed to process PDF document.";
       setError(msg);
-      setProgress({
-        step: "error",
-        message: msg,
-        percent: 0,
-      });
+      setProgress({ step: "error", message: msg, percent: 0 });
       showToast("Extraction Error", msg, "error");
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleFileSelect = (
-    file: File,
-    options: { useAi: boolean; apiKey?: string; useOcr: string }
-  ) => {
-    handleStartExtraction(file, file.name, options);
-  };
-
-  const handleSampleSelect = (
-    sampleBlob: Blob,
-    sampleFilename: string,
-    options: { useAi: boolean; apiKey?: string; useOcr: string }
-  ) => {
-    handleStartExtraction(sampleBlob, sampleFilename, options);
-  };
-
   const handleSaveQuestion = (updated: MCQQuestion) => {
-    const nextQuestions = questions.map((q) =>
-      q.id === updated.id ? updated : q
-    );
-    setQuestions(nextQuestions);
+    const nextQuestions = currentQuestions.map((q) => (q.id === updated.id ? updated : q));
+    setCurrentQuestions(nextQuestions);
 
-    // Recalculate stats
-    const updatedStats: ExtractionStats = {
-      totalQuestions: nextQuestions.length,
-      answeredCount: nextQuestions.filter((q) => q.status === "answered").length,
-      unansweredCount: nextQuestions.filter((q) => q.status === "missing_answer").length,
-      needsReviewCount: nextQuestions.filter((q) => q.confidence === "needs-review").length,
-      totalPages: stats?.totalPages || 1,
-      isOcrUsed: stats?.isOcrUsed || false,
-    };
-    setStats(updatedStats);
-    persistSession(nextQuestions, updatedStats, filename);
-    showToast("Changes Saved", `Question ${updated.number} updated`, "success");
+    // Update in allQuestions
+    const sq = toStructuredQuestion(updated);
+    const nextBank = allQuestions.map((q) => (q.id === sq.id ? sq : q));
+    setAllQuestions(nextBank);
+    persistQuestions(nextBank);
+
+    if (stats) {
+      const updatedStats: ExtractionStats = {
+        ...stats,
+        answeredCount: nextQuestions.filter((q) => q.status === "answered").length,
+        unansweredCount: nextQuestions.filter((q) => q.status === "missing_answer").length,
+        needsReviewCount: nextQuestions.filter((q) => q.confidence === "needs-review").length,
+      };
+      setStats(updatedStats);
+    }
+    showToast("Question Saved", "Changes updated in Question Bank", "success");
   };
 
   const handleDeleteQuestion = (id: string) => {
-    const nextQuestions = questions.filter((q) => q.id !== id);
-    setQuestions(nextQuestions);
+    const nextQuestions = currentQuestions.filter((q) => q.id !== id);
+    setCurrentQuestions(nextQuestions);
 
-    const updatedStats: ExtractionStats = {
-      totalQuestions: nextQuestions.length,
-      answeredCount: nextQuestions.filter((q) => q.status === "answered").length,
-      unansweredCount: nextQuestions.filter((q) => q.status === "missing_answer").length,
-      needsReviewCount: nextQuestions.filter((q) => q.confidence === "needs-review").length,
-      totalPages: stats?.totalPages || 1,
-      isOcrUsed: stats?.isOcrUsed || false,
-    };
-    setStats(updatedStats);
-    persistSession(nextQuestions, updatedStats, filename);
+    const nextBank = allQuestions.filter((q) => q.id !== id);
+    setAllQuestions(nextBank);
+    persistQuestions(nextBank);
+
     showToast("Question Deleted", undefined, "info");
+  };
+
+  const handleApproveAllCurrent = () => {
+    const approved = currentQuestions.map((q) => ({
+      ...q,
+      verificationStatus: "verified" as const,
+    }));
+    setCurrentQuestions(approved);
+
+    const approvedSQ = approved.map((q) => toStructuredQuestion(q));
+    const nextBank = allQuestions.map((q) => {
+      const match = approvedSQ.find((a) => a.id === q.id);
+      return match ? { ...q, status: "verified" as const } : q;
+    });
+    setAllQuestions(nextBank);
+    persistQuestions(nextBank);
+
+    showToast("All Approved", `Marked ${approved.length} questions as verified`, "success");
   };
 
   const handleSelectQuestion = (q: MCQQuestion) => {
@@ -311,30 +342,26 @@ export default function Home() {
   };
 
   const handleResetSession = () => {
-    if (confirm("Reset current extraction and upload a new PDF?")) {
-      setQuestions([]);
+    if (confirm("Reset current extraction session and upload a new PDF?")) {
+      setCurrentQuestions([]);
       setStats(null);
       setPdfFile(null);
       setSelectedQuestionId(null);
       setError(null);
       localStorage.removeItem(STORAGE_KEY);
-      showToast("Session Reset", "Ready to upload another document", "info");
+      setActiveTab("upload");
+      showToast("Ready for New PDF", "Upload a document to extract questions", "info");
     }
   };
 
-  // Filter & Search calculations
+  // Filter & Search calculations for review screen
   const filteredQuestions = useMemo(() => {
-    return questions.filter((q) => {
-      // 1. Status Filter
+    return currentQuestions.filter((q) => {
       if (activeFilter === "answered" && q.status !== "answered") return false;
-      if (activeFilter === "missing_answer" && q.status !== "missing_answer")
-        return false;
-      if (activeFilter === "needs_review" && q.confidence !== "needs-review")
-        return false;
-      if (activeFilter === "high_confidence" && q.confidence !== "high")
-        return false;
+      if (activeFilter === "missing_answer" && q.status !== "missing_answer") return false;
+      if (activeFilter === "needs_review" && q.confidence !== "needs-review") return false;
+      if (activeFilter === "high_confidence" && q.confidence !== "high") return false;
 
-      // 2. Search Query
       if (searchQuery.trim()) {
         const query = searchQuery.toLowerCase().trim();
         const matchesNum = String(q.number).includes(query);
@@ -347,229 +374,311 @@ export default function Home() {
 
       return true;
     });
-  }, [questions, activeFilter, searchQuery]);
+  }, [currentQuestions, activeFilter, searchQuery]);
 
   const filterCounts = useMemo(() => {
     return {
-      all: questions.length,
-      answered: questions.filter((q) => q.status === "answered").length,
-      missing_answer: questions.filter((q) => q.status === "missing_answer").length,
-      needs_review: questions.filter((q) => q.confidence === "needs-review").length,
-      high_confidence: questions.filter((q) => q.confidence === "high").length,
+      all: currentQuestions.length,
+      answered: currentQuestions.filter((q) => q.status === "answered").length,
+      missing_answer: currentQuestions.filter((q) => q.status === "missing_answer").length,
+      needs_review: currentQuestions.filter((q) => q.confidence === "needs-review").length,
+      high_confidence: currentQuestions.filter((q) => q.confidence === "high").length,
     };
-  }, [questions]);
+  }, [currentQuestions]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950">
       <Navbar
-        hasExtractedData={questions.length > 0}
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        questionCount={allQuestions.length}
+        hasExtractedData={currentQuestions.length > 0}
         onReset={handleResetSession}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
-        {/* VIEW 1: UPLOAD STATE */}
-        {!isProcessing && questions.length === 0 && (
-          <div className="py-6 sm:py-12 space-y-12">
-            {/* Hero Header */}
-            <div className="text-center max-w-3xl mx-auto space-y-3">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs font-semibold border border-blue-500/20">
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Next-Gen Examination Paper Parser</span>
-              </div>
-              <h1 className="text-3xl sm:text-5xl font-black tracking-tight text-slate-900 dark:text-white">
-                Extract Multiple Choice Questions from{" "}
-                <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-                  Any PDF
-                </span>
-              </h1>
-              <p className="text-base text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
-                Automatic question, option, and answer detection for English & Bengali (বাংলা)
-                exams. Works on native and scanned PDFs with OCR and instant export to Excel,
-                Word, CSV, and JSON.
-              </p>
-            </div>
-
-            {/* Uploader Card */}
-            <PdfUploader
-              onFileSelect={handleFileSelect}
-              onSampleSelect={handleSampleSelect}
-              isLoading={isProcessing}
-            />
-
-            {/* Feature Highlights Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 max-w-5xl mx-auto pt-6 border-t border-slate-200/80 dark:border-slate-800/80">
-              <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/60 shadow-2xs">
-                <div className="p-2 w-fit rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 mb-2">
-                  <CheckCircle className="w-4 h-4" />
-                </div>
-                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
-                  Zero Hallucinations
-                </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Never invents missing answers. Clearly flags unverified questions as "Needs Review".
-                </p>
-              </div>
-
-              <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/60 shadow-2xs">
-                <div className="p-2 w-fit rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 mb-2">
-                  <BookOpen className="w-4 h-4" />
-                </div>
-                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
-                  Native Bengali Support
-                </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Recognizes ১, ২, ৩, ক, খ, গ, ঘ, উত্তরমালা, and BCS/HSC exam formats natively.
-                </p>
-              </div>
-
-              <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/60 shadow-2xs">
-                <div className="p-2 w-fit rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400 mb-2">
-                  <Cpu className="w-4 h-4" />
-                </div>
-                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
-                  Tesseract.js OCR
-                </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Scanned pages and photocopied question papers are recognized automatically.
-                </p>
-              </div>
-
-              <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/60 shadow-2xs">
-                <div className="p-2 w-fit rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 mb-2">
-                  <Layers className="w-4 h-4" />
-                </div>
-                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
-                  Full Suite Export
-                </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                  Download formatted Word (.docx), Excel (.xlsx), CSV with UTF-8 BOM, or JSON.
-                </p>
-              </div>
-            </div>
-          </div>
+        {/* VIEW A: DASHBOARD VIEW */}
+        {activeTab === "dashboard" && (
+          <DashboardView
+            questions={allQuestions}
+            documents={allDocuments}
+            onNavigateTab={setActiveTab}
+          />
         )}
 
-        {/* VIEW 2: PROCESSING SCREEN */}
-        {isProcessing && (
-          <div className="py-16 sm:py-24">
-            <ExtractionProgressView
-              progress={progress}
-              totalExtracted={questions.length}
-            />
-          </div>
+        {/* VIEW B: QUESTION BANK VIEW */}
+        {activeTab === "bank" && (
+          <QuestionBankView
+            questions={allQuestions}
+            onUpdateQuestions={handleUpdateBankQuestions}
+            onViewSource={(p) => {
+              setActivePdfPage(p);
+              setActiveTab("upload");
+            }}
+          />
         )}
 
-        {/* VIEW 3: RESULTS DASHBOARD (SPLIT SCREEN) */}
-        {!isProcessing && questions.length > 0 && (
-          <div className="space-y-6">
-            {/* Top Row: Metric Stats + Export & Control Buttons */}
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-              {stats && <StatsCard stats={stats} />}
-            </div>
-
-            {/* Dashboard Action Toolbar */}
-            <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xs">
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-sm text-slate-900 dark:text-slate-100 truncate max-w-[200px] sm:max-w-xs">
-                  {filename}
-                </span>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-semibold">
-                  {questions.length} Questions
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {/* Toggle PDF preview panel */}
-                <button
-                  type="button"
-                  onClick={() => setShowPdfPreview(!showPdfPreview)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300 transition-colors"
-                  title={showPdfPreview ? "Hide PDF split view" : "Show PDF split view"}
-                >
-                  {showPdfPreview ? (
-                    <>
-                      <EyeOff className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Hide PDF Preview</span>
-                    </>
-                  ) : (
-                    <>
-                      <Eye className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Show PDF Preview</span>
-                    </>
-                  )}
-                </button>
-
-                {/* Export Dropdown */}
-                <ExportMenu questions={questions} filename={filename} />
-
-                {/* Reset button */}
-                <button
-                  type="button"
-                  onClick={handleResetSession}
-                  className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                  title="Upload Another PDF"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Main Split-Screen Container */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              {/* LEFT COLUMN: PDF PREVIEW */}
-              {showPdfPreview && (
-                <div className="lg:col-span-5 h-[650px] lg:sticky lg:top-20">
-                  <PdfPreview
-                    pdfFile={pdfFile}
-                    targetPage={activePdfPage}
-                    totalPages={stats?.totalPages || 1}
-                    onPageChange={(p) => setActivePdfPage(p)}
-                  />
+        {/* VIEW C: UPLOAD & EXTRACTION REVIEW WORKSPACE */}
+        {activeTab === "upload" && (
+          <div>
+            {/* Step 1: Upload Dropzone if no active extraction */}
+            {!isProcessing && currentQuestions.length === 0 && (
+              <div className="py-6 sm:py-12 space-y-12">
+                <div className="text-center max-w-3xl mx-auto space-y-3">
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 text-xs font-semibold border border-blue-500/20">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Production PDF Question Bank Platform</span>
+                  </div>
+                  <h1 className="text-3xl sm:text-5xl font-black tracking-tight text-slate-900 dark:text-white">
+                    Extract Pure Questions from{" "}
+                    <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+                      Any Exam PDF
+                    </span>
+                  </h1>
+                  <p className="text-base text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
+                    Detects strictly questions, options, and answers while ignoring all headers,
+                    footers, instructions, and book metadata. Native English and Bengali (বাংলা) support.
+                  </p>
                 </div>
-              )}
 
-              {/* RIGHT COLUMN: EXTRACTED QUESTIONS LIST */}
-              <div
-                className={`${
-                  showPdfPreview ? "lg:col-span-7" : "lg:col-span-12"
-                } space-y-4`}
-              >
-                {/* Search & Filter Component */}
-                <SearchBar
-                  searchQuery={searchQuery}
-                  onSearchChange={setSearchQuery}
-                  activeFilter={activeFilter}
-                  onFilterChange={setActiveFilter}
-                  counts={filterCounts}
+                <PdfUploader
+                  onFileSelect={(file, opts) => handleStartExtraction(file, file.name, opts)}
+                  onSampleSelect={(blob, name, opts) => handleStartExtraction(blob, name, opts)}
+                  isLoading={isProcessing}
                 />
 
-                {/* Question Cards List */}
-                {filteredQuestions.length === 0 ? (
-                  <div className="p-12 text-center rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50">
-                    <FileText className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                    <h4 className="font-bold text-slate-700 dark:text-slate-300 text-sm">
-                      No matching questions found
+                {/* Highlights */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 max-w-5xl mx-auto pt-6 border-t border-slate-200/80 dark:border-slate-800/80">
+                  <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/60 shadow-2xs">
+                    <div className="p-2 w-fit rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 mb-2">
+                      <CheckCircle className="w-4 h-4" />
+                    </div>
+                    <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                      Noise Filtering
                     </h4>
-                    <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
-                      Try adjusting your search query or switching the active filter.
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                      Ignores chapter titles, negative marking notes, page numbers, and disclaimers.
                     </p>
                   </div>
-                ) : (
-                  <div className="space-y-3.5">
-                    {filteredQuestions.map((q) => (
-                      <QuestionCard
-                        key={q.id}
-                        question={q}
-                        isSelected={selectedQuestionId === q.id}
-                        onSelect={handleSelectQuestion}
-                        onEdit={(target) => setEditingQuestion(target)}
-                        onDelete={handleDeleteQuestion}
-                      />
-                    ))}
+
+                  <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/60 shadow-2xs">
+                    <div className="p-2 w-fit rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 mb-2">
+                      <BookOpen className="w-4 h-4" />
+                    </div>
+                    <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                      Bengali &amp; English
+                    </h4>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                      Full support for ১, ২, ৩, ক, খ, গ, ঘ and standard A, B, C, D numbering.
+                    </p>
                   </div>
-                )}
+
+                  <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/60 shadow-2xs">
+                    <div className="p-2 w-fit rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400 mb-2">
+                      <Cpu className="w-4 h-4" />
+                    </div>
+                    <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                      Text &amp; OCR Engine
+                    </h4>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                      Extracts directly in browser up to 150MB with zero server upload limits.
+                    </p>
+                  </div>
+
+                  <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/60 shadow-2xs">
+                    <div className="p-2 w-fit rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 mb-2">
+                      <Layers className="w-4 h-4" />
+                    </div>
+                    <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                      SVG &amp; CSV Exports
+                    </h4>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                      Download individual/bulk vector SVGs and standard CSVs with UTF-8 BOM.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Step 2: Processing indicator */}
+            {isProcessing && (
+              <div className="py-16 sm:py-24">
+                <ExtractionProgressView
+                  progress={progress}
+                  totalExtracted={currentQuestions.length}
+                />
+              </div>
+            )}
+
+            {/* Step 3: Split-Screen Review Workspace */}
+            {!isProcessing && currentQuestions.length > 0 && (
+              <div className="space-y-6">
+                {/* Stats Card */}
+                {stats && <StatsCard stats={stats} />}
+
+                {/* Toolbar */}
+                <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-sm text-slate-900 dark:text-slate-100 truncate max-w-[200px] sm:max-w-xs">
+                      {filename}
+                    </span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-semibold">
+                      {currentQuestions.length} Questions
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleApproveAllCurrent}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-colors"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Approve All
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowPdfPreview(!showPdfPreview)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-300 transition-colors"
+                    >
+                      {showPdfPreview ? (
+                        <>
+                          <EyeOff className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Hide PDF</span>
+                        </>
+                      ) : (
+                        <>
+                          <Eye className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Show PDF</span>
+                        </>
+                      )}
+                    </button>
+
+                    <ExportMenu questions={currentQuestions} filename={filename} />
+
+                    <button
+                      type="button"
+                      onClick={handleResetSession}
+                      className="p-2 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                      title="Upload Another PDF"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Split-Screen Review Container */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                  {/* Left Column: PDF Preview */}
+                  {showPdfPreview && (
+                    <div className="lg:col-span-5 h-[650px] lg:sticky lg:top-20">
+                      <PdfPreview
+                        pdfFile={pdfFile}
+                        targetPage={activePdfPage}
+                        totalPages={stats?.totalPages || 1}
+                        onPageChange={(p) => setActivePdfPage(p)}
+                      />
+                    </div>
+                  )}
+
+                  {/* Right Column: Question Cards */}
+                  <div
+                    className={`${
+                      showPdfPreview ? "lg:col-span-7" : "lg:col-span-12"
+                    } space-y-4`}
+                  >
+                    <SearchBar
+                      searchQuery={searchQuery}
+                      onSearchChange={setSearchQuery}
+                      activeFilter={activeFilter}
+                      onFilterChange={setActiveFilter}
+                      counts={filterCounts}
+                    />
+
+                    {filteredQuestions.length === 0 ? (
+                      <div className="p-12 text-center rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 bg-white/50 dark:bg-slate-900/50">
+                        <FileText className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                        <h4 className="font-bold text-slate-700 dark:text-slate-300 text-sm">
+                          No matching questions
+                        </h4>
+                      </div>
+                    ) : (
+                      <div className="space-y-3.5">
+                        {filteredQuestions.map((q) => (
+                          <QuestionCard
+                            key={q.id}
+                            question={q}
+                            isSelected={selectedQuestionId === q.id}
+                            onSelect={handleSelectQuestion}
+                            onEdit={(target) => setEditingQuestion(target)}
+                            onDelete={handleDeleteQuestion}
+                            onOpenSvg={(target) => setSvgStudioTarget(toStructuredQuestion(target))}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* VIEW D: SVG STUDIO STANDALONE TAB */}
+        {activeTab === "svg-studio" && (
+          <div className="space-y-4">
+            <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm">
+                  SVG Vector Studio &amp; Layout Engine
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Select a question below to preview and export semantic vector SVG graphics
+                </p>
               </div>
             </div>
+
+            {allQuestions.length === 0 ? (
+              <div className="p-12 text-center rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                <Sparkles className="w-10 h-10 text-amber-500 mx-auto mb-3" />
+                <h4 className="font-bold text-slate-800 dark:text-slate-200 text-sm">
+                  No Questions Available
+                </h4>
+                <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                  Extract a PDF document or import CSV to start designing SVGs.
+                </p>
+                <button
+                  onClick={() => setActiveTab("upload")}
+                  className="mt-4 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs"
+                >
+                  Upload PDF Now
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                {allQuestions.map((q) => (
+                  <div
+                    key={q.id}
+                    onClick={() => setSvgStudioTarget(q)}
+                    className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-blue-500 cursor-pointer transition-all shadow-2xs hover:shadow-xs"
+                  >
+                    <div className="flex items-center justify-between text-xs font-bold mb-2">
+                      <span className="text-blue-600">Question #{q.questionNumber}</span>
+                      <span className="text-amber-500 flex items-center gap-1">
+                        <Sparkles className="w-3.5 h-3.5" /> SVG
+                      </span>
+                    </div>
+                    <p className="text-xs font-medium text-slate-800 dark:text-slate-200 line-clamp-2">
+                      {q.question.text}
+                    </p>
+                    <div className="mt-2 text-[10px] text-slate-400">
+                      Answer: {q.answer?.key || "None"} • {q.options.length} Options
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </main>
@@ -581,6 +690,15 @@ export default function Home() {
           isOpen={true}
           onSave={handleSaveQuestion}
           onClose={() => setEditingQuestion(null)}
+        />
+      )}
+
+      {/* SVG Studio Modal */}
+      {svgStudioTarget && (
+        <SvgEditorModal
+          question={svgStudioTarget}
+          isOpen={Boolean(svgStudioTarget)}
+          onClose={() => setSvgStudioTarget(null)}
         />
       )}
     </div>

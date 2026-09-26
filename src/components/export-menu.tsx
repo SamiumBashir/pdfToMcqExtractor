@@ -182,10 +182,30 @@ export function ExportMenu({ questions, filename = "mcq-bank" }: ExportMenuProps
               onClick={handleDownloadCSV}
               className="flex items-center gap-3 w-full px-4 py-2 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
             >
-              <File className="w-4 h-4 text-teal-600" />
+              <File className="w-4 h-4 text-emerald-600" />
               <div className="text-left">
-                <div className="font-semibold">CSV Spreadsheet (.csv)</div>
-                <div className="text-[10px] text-slate-400">UTF-8 Bengali supported</div>
+                <div className="font-semibold">Standard CSV (.csv)</div>
+                <div className="text-[10px] text-slate-400">Section 46 format (UTF-8 BOM)</div>
+              </div>
+            </button>
+
+            <button
+              onClick={async () => {
+                setIsOpen(false);
+                try {
+                  const { downloadBulkSvgZip } = await import("@/lib/svg/svg-generator");
+                  await downloadBulkSvgZip(questions);
+                  showToast("Bulk SVG Export", `Downloaded ${questions.length} SVG files in ZIP bundle`, "success");
+                } catch (e) {
+                  showToast("SVG Export Error", String(e), "error");
+                }
+              }}
+              className="flex items-center gap-3 w-full px-4 py-2 text-xs text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+            >
+              <FileCode className="w-4 h-4 text-amber-500" />
+              <div className="text-left">
+                <div className="font-semibold">Vector SVG Bundle (.zip)</div>
+                <div className="text-[10px] text-slate-400">Pure vector semantic SVG cards</div>
               </div>
             </button>
 

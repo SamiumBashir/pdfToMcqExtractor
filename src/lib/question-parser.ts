@@ -1,4 +1,4 @@
-import { MCQQuestion, ConfidenceLevel, QuestionStatus } from "@/types/question";
+import { MCQQuestion, ConfidenceLevel, QuestionStatus, QuestionVerificationStatus } from "@/types/question";
 import {
   bengaliDigitsToEnglish,
   normalizeOptionKey,
@@ -13,6 +13,91 @@ interface RawQuestionBlock {
   number: number;
   blockText: string;
   pageNumber?: number;
+}
+
+/**
+ * Detects whether a line represents irrelevant PDF noise conforming to Section 9:
+ * - Book/chapter titles
+ * - Headers / Footers
+ * - Page numbers (e.g. Page 12, পৃষ্ঠা ১২, - 12 -)
+ * - Copyright notices
+ * - Author / Publisher lines
+ * - Examination notices / instructions
+ * - Web addresses & contact emails
+ * - Decorative dividers
+ */
+export function isDocumentNoiseLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+
+  // 1. Page numbers: "Page 12", "পৃষ্ঠা ১২", "12 of 45", "- 12 -", "[12]", "12/50"
+  if (/^(?:Page|পৃষ্ঠা|P\.)\s*[0-9০-৯]+(?:\s*(?:of|\/|-)\s*[0-9০-৯]+)?$/i.test(trimmed)) return true;
+  if (/^[-–—\[(]\s*[0-9০-৯]+\s*[-–—\])]$/.test(trimmed)) return true;
+  if (/^[0-9০-৯]+\s*(?:\/|of)\s*[0-9০-৯]+$/i.test(trimmed)) return true;
+
+  // 2. Copyright and legal notices
+  if (/(?:Copyright|All Rights Reserved|স্বত্ব সংরক্ষিত|©|\(c\))\s*[0-9০-৯]*/i.test(trimmed)) return true;
+
+  // 3. Document / Chapter headers & Book titles
+  if (/^(?:Chapter|অধ্যায়|অধ্যায়|Part|Unit|Section|খণ্ড|পরিচ্ছেদ)\s*[0-9০-৯ivx]+\b.*$/i.test(trimmed)) return true;
+
+  // 4. Instructions / Exam Notices
+  if (/^(?:Important\s*Notice|Instructions?|General\s*Instructions?|Note|বি\.দ্র\.|বিশেষ\s*দ্রষ্টব্য|নির্দেশনা|প্রার্থীদের\s*জন্য\s*নির্দেশনা)[:\-–—]?.*$/i.test(trimmed)) return true;
+  if (/(?:Calculators|Mobile\s*phones|Electronic\s*devices)\s+are\s+not\s+allowed/i.test(trimmed)) return true;
+
+  // 5. Author, publisher, contact, website info
+  if (/^(?:Author|লেখক|সম্পাদক|প্রকাশক|প্রকাশনী|Publisher|Edited by|Feedback|Email|Website)\s*[:\-–—].*$/i.test(trimmed)) return true;
+  if (/^(?:https?:\/\/|www\.)[^\s]+$/i.test(trimmed)) return true;
+
+  // 6. Pure decorative line breaks: "---", "===", "***", "___"
+  if (/^[-—_=*~#]{3,}$/.test(trimmed)) return true;
+
+  return false;
+}
+
+/**
+ * Cleans the extracted question prompt text by removing noise lines
+ * while preserving multi-line question sentences.
+ */
+export function cleanQuestionText(text: string): string {
+  if (!text) return "";
+  const lines = text.split("\n");
+  const filteredLines: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (isDocumentNoiseLine(trimmed)) continue;
+    filteredLines.push(trimmed);
+  }
+
+  return filteredLines.join("\n").trim();
+}
+
+/**
+ * Cleans option text by trimming noise, explanations, and extraneous footers.
+ */
+export function cleanOptionText(text: string): string {
+  if (!text) return "";
+  const lines = text.split("\n");
+  const validParts: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // Immediately truncate option at explanation markers or document noise
+    if (
+      /^(?:Explanation|ব্যাখ্যা|Description|Note|Notes|বি\.দ্র\.|Hints?|সমাধান)\s*[:\-–—]/i.test(trimmed) ||
+      isDocumentNoiseLine(trimmed)
+    ) {
+      break;
+    }
+
+    validParts.push(trimmed);
+  }
+
+  return validParts.join(" ").replace(/\s+/g, " ").trim();
 }
 
 /**
@@ -61,7 +146,6 @@ export function splitIntoQuestionBlocks(
 
       if (match) {
         const rawNum = match[1];
-        const delimiter = match[2];
         const numVal = parseInt(bengaliDigitsToEnglish(rawNum), 10);
 
         // Sanity check: must be a positive integer <= 500
@@ -123,11 +207,6 @@ export function extractQuestionAndOptions(
   // Lowercase: a, b, c, d (and optionally e)
   // Numeric: (1), (2), (3), (4) or 1., 2., 3., 4.
 
-  // Regex to find option markers anywhere in the text:
-  // Matches:
-  // (A), (B), (C), (D) or (a), (b)... or (ক), (খ)...
-  // A., B., C., D. or A), B), C), D) or A:
-  // ক., ক), ক। or ১), ২)...
   const optionMarkerRegex =
     /(?:^|\s|\n)(?:\(?([A-Ea-eক-ঙ1-5])\)|([A-Ea-eক-ঙ])\s*[.:)\]।\-–—])(?:\s+|$)/g;
 
@@ -162,7 +241,8 @@ export function extractQuestionAndOptions(
   // If we found at least 2 sequential options (A and B or more)
   if (sequenceMatches.length >= 2) {
     const firstOption = sequenceMatches[0];
-    const questionText = cleanedBlockText.slice(0, firstOption.index).trim();
+    const rawQuestionText = cleanedBlockText.slice(0, firstOption.index).trim();
+    const questionText = cleanQuestionText(rawQuestionText);
 
     for (let i = 0; i < sequenceMatches.length; i++) {
       const current = sequenceMatches[i];
@@ -172,12 +252,12 @@ export function extractQuestionAndOptions(
           ? sequenceMatches[i + 1].index
           : cleanedBlockText.length;
 
-      const optionContent = cleanedBlockText.slice(startContent, endContent).trim();
-      options[current.key] = optionContent;
+      const optionContent = cleanedBlockText.slice(startContent, endContent);
+      options[current.key] = cleanOptionText(optionContent);
     }
 
     return {
-      questionText: questionText || cleanedBlockText,
+      questionText: questionText || cleanQuestionText(cleanedBlockText),
       options,
     };
   }
@@ -199,22 +279,35 @@ export function extractQuestionAndOptions(
       currentKey = normalizeOptionKey(rawKey);
       fallbackOptions[currentKey] = lineMatch[3].trim();
     } else if (foundFirstOption && currentKey) {
-      fallbackOptions[currentKey] += " " + line.trim();
+      if (
+        /^(?:Explanation|ব্যাখ্যা|Description|Note|Notes|বি\.দ্র\.|Hints?|সমাধান)\s*[:\-–—]/i.test(line.trim()) ||
+        isDocumentNoiseLine(line.trim())
+      ) {
+        currentKey = null; // Stop accumulating into the option
+      } else {
+        fallbackOptions[currentKey] += " " + line.trim();
+      }
     } else {
-      questionLines.push(line);
+      if (!isDocumentNoiseLine(line.trim())) {
+        questionLines.push(line);
+      }
     }
   }
 
   if (Object.keys(fallbackOptions).length >= 2) {
+    const cleanedFallback: Record<string, string> = {};
+    for (const [k, v] of Object.entries(fallbackOptions)) {
+      cleanedFallback[k] = cleanOptionText(v);
+    }
     return {
-      questionText: questionLines.join("\n").trim(),
-      options: fallbackOptions,
+      questionText: cleanQuestionText(questionLines.join("\n")),
+      options: cleanedFallback,
     };
   }
 
   // If no options detected at all
   return {
-    questionText: cleanedBlockText.trim(),
+    questionText: cleanQuestionText(cleanedBlockText),
     options: {},
   };
 }
@@ -224,12 +317,22 @@ export function extractQuestionAndOptions(
  */
 export function parseMCQDocument(
   pages: PageTextData[] | string,
-  fullText: string
+  fullText?: string
 ): MCQQuestion[] {
   const blocks = splitIntoQuestionBlocks(pages);
 
-  // Also parse standalone answer key section if present in the document
-  const answerKeyMap = parseAnswerKeySection(fullText);
+  // Compute full text for answer key parsing if not explicitly passed
+  let docFullText = fullText || "";
+  if (!docFullText) {
+    if (typeof pages === "string") {
+      docFullText = pages;
+    } else if (Array.isArray(pages)) {
+      docFullText = pages.map((p) => p.text).join("\n");
+    }
+  }
+
+  // Parse standalone answer key section if present in the document
+  const answerKeyMap = parseAnswerKeySection(docFullText);
 
   const questions: MCQQuestion[] = [];
 
@@ -250,9 +353,6 @@ export function parseMCQDocument(
       answer = answerKeyMap.get(qNum) || null;
     }
 
-    // Check if the document is Bengali to preserve Bengali option labels if appropriate
-    const isBengali = hasBengaliText(questionText) || hasBengaliText(block.blockText);
-
     // Normalize option keys to uppercase standard A, B, C, D
     const standardizedOptions: Record<string, string> = {};
     for (const [k, v] of Object.entries(options)) {
@@ -260,7 +360,7 @@ export function parseMCQDocument(
       standardizedOptions[normKey] = v;
     }
 
-    // Determine confidence and status
+    // Determine confidence and status conforming strictly to Section 11 & Section 44
     const optionCount = Object.keys(standardizedOptions).length;
     let confidence: ConfidenceLevel = "needs-review";
     let status: QuestionStatus = "needs_review";
@@ -271,13 +371,16 @@ export function parseMCQDocument(
     } else if (optionCount >= 3 && answer !== null) {
       confidence = "medium";
       status = "answered";
-    } else if (optionCount >= 3 && answer === null) {
+    } else if (answer === null) {
       confidence = "needs-review";
       status = "missing_answer";
     } else {
       confidence = "needs-review";
       status = "needs_review";
     }
+
+    const verificationStatus: QuestionVerificationStatus =
+      confidence === "high" && answer !== null ? "verified" : "review";
 
     questions.push({
       id: `q-${qNum}-${Date.now()}-${i}`,
@@ -288,6 +391,7 @@ export function parseMCQDocument(
       correctAnswer: answer,
       confidence,
       status,
+      verificationStatus,
       pageNumber: block.pageNumber || 1,
     });
   }

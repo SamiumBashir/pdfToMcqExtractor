@@ -75,8 +75,10 @@ export function QuestionEditor({
       question: questionText.trim(),
       options,
       correctAnswer,
+      answerText: correctAnswer ? options[correctAnswer] : undefined,
       confidence,
       status,
+      verificationStatus: "verified",
       isEdited: true,
     });
     onClose();
