@@ -20,10 +20,10 @@ export function extractInlineAnswer(blockText: string): ParsedAnswerResult {
   }
 
   // Answer markers with strict boundaries to avoid false positives:
-  // English: Answer: B, Ans: (b), Correct Answer: C, Ans.- A, Solution: B, Key: D
-  // Bengali: উত্তর: ক, সঠিক উত্তর: (খ), উ:, উঃ খ
+  // English: Answer: B, Ans: (b), Correct Answer: C, Ans.- A, Solution: B, Key: D, Ans: B
+  // Bengali: উত্তর: ক, সঠিক উত্তর: (খ), উত্তর ক, উ:, উঃ খ, উ. গ, উ . গ, উ-গ
   const answerRegex =
-    /(?:(?:\b(?:Correct\s*Answer|Answer|Ans\.?|Solution|Exam\s*Key|Key)\b|(?:^|\s|\n)(?:সঠিক\s*উত্তর|উত্তর|উঃ|উ:))\s*[:.\-–—]?\s*)(?:\(?([A-Ea-eক-ঙ1-5])\)?|([A-Ea-e1-5])\b|([ক-ঙ]))/i;
+    /(?:(?:\b(?:Correct\s*Answer|Answer|Ans\.?|Solution|Exam\s*Key|Key)\b|(?:^|\s|\n)(?:সঠিক\s*উত্তর|উত্তর|উঃ|উ:|উ\s*\.))\s*[:.\-–—]?\s*)(?:\(?([A-Ea-eক-ঙ1-5])\)?|([A-Ea-e1-5])\b|([ক-ঙ]))/i;
 
   const match = blockText.match(answerRegex);
 

@@ -86,9 +86,10 @@ export function cleanOptionText(text: string): string {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
-    // Immediately truncate option at explanation markers or document noise
+    // Immediately truncate option at explanation markers, answer markers, or document noise
     if (
-      /^(?:Explanation|ব্যাখ্যা|Description|Note|Notes|বি\.দ্র\.|Hints?|সমাধান)\s*[:\-–—]/i.test(trimmed) ||
+      /^(?:Explanation|ব্যাখ্যা|Description|Note|Notes|বি\.দ্র\.|Hints?|সমাধান|বযা\s*যা)\s*[:\-–—]?/i.test(trimmed) ||
+      /^(?:(?:Answer|Ans|Correct\s*Answer|উত্তর|সঠিক\s*উত্তর|উঃ|উ:|উ\s*\.)\s*[:.\-–—]?\s*\(?[A-Ea-eক-ঙ1-5]\)?)/i.test(trimmed) ||
       isDocumentNoiseLine(trimmed)
     ) {
       break;
@@ -97,7 +98,48 @@ export function cleanOptionText(text: string): string {
     validParts.push(trimmed);
   }
 
-  return validParts.join(" ").replace(/\s+/g, " ").trim();
+  let cleaned = validParts.join(" ").replace(/\s+/g, " ").trim();
+
+  // Strip any inline answer that may be trailing on the same line (e.g. "রশ্মিবিচ্ছুরণ উ. গ")
+  cleaned = cleaned.replace(
+    /\s*(?:(?:Answer|Ans|Correct\s*Answer|উত্তর|সঠিক\s*উত্তর|উঃ|উ:|উ\s*\.)\s*[:.\-–—]?\s*\(?[A-Ea-eক-ঙ1-5]\)?).*$/i,
+    ""
+  );
+
+  // Strip any explanation that may be trailing on the same line
+  cleaned = cleaned.replace(
+    /\s*(?:(?:Explanation|ব্যাখ্যা|Description|Note|বি\.দ্র\.|Hints?|সমাধান|বযা\s*যা)\s*[:\-–—]?).*$/i,
+    ""
+  );
+
+  return cleaned.trim();
+}
+
+/**
+ * Extracts explanation block from a question text block and returns the cleaned text.
+ * Matches:
+ * "ব্যাখ্যা: ...", "Explanation: ...", "সমাধান: ...", "বি.দ্র. ...", "বলা যায়: ..."
+ */
+export function extractExplanation(blockText: string): {
+  explanation?: string;
+  cleanedText: string;
+} {
+  if (!blockText) return { cleanedText: "" };
+
+  const explanationRegex =
+    /(?:^|\s|\n)(?:(?:ব্যাখ্যা|Explanation|Description|সমাধান|বি\.দ্র\.|বযা\s*যা)\s*[:\-–—]?\s*)([\s\S]*)$/i;
+
+  const match = blockText.match(explanationRegex);
+  if (match && match.index !== undefined) {
+    const explanation = match[1]?.trim();
+    const cleanedText = blockText.slice(0, match.index).trim();
+    return {
+      explanation: explanation || undefined,
+      cleanedText,
+    };
+  }
+
+  return { cleanedText: blockText };
 }
 
 /**
@@ -340,13 +382,16 @@ export function parseMCQDocument(
     const block = blocks[i];
     const qNum = block.number || i + 1;
 
-    // 1. Extract inline answer if available
-    const inlineAnsResult = extractInlineAnswer(block.blockText);
+    // 1. Extract explanation so it doesn't pollute options or answer
+    const { explanation, cleanedText: textWithoutExplanation } = extractExplanation(block.blockText);
 
-    // 2. Extract question text and options
-    const { questionText, options } = extractQuestionAndOptions(block.blockText);
+    // 2. Extract inline answer if available
+    const inlineAnsResult = extractInlineAnswer(textWithoutExplanation);
 
-    // 3. Determine correct answer:
+    // 3. Extract question text and options from the remaining clean text
+    const { questionText, options } = extractQuestionAndOptions(inlineAnsResult.cleanedBlockText);
+
+    // 4. Determine correct answer:
     // Priority: Inline answer in question block > Separate Answer Key section
     let answer = inlineAnsResult.correctAnswer;
     if (!answer && answerKeyMap.has(qNum)) {
@@ -382,6 +427,9 @@ export function parseMCQDocument(
     const verificationStatus: QuestionVerificationStatus =
       confidence === "high" && answer !== null ? "verified" : "review";
 
+    const answerText =
+      answer && standardizedOptions[answer] ? standardizedOptions[answer] : undefined;
+
     questions.push({
       id: `q-${qNum}-${Date.now()}-${i}`,
       number: qNum,
@@ -389,6 +437,8 @@ export function parseMCQDocument(
       question: questionText || `Question ${qNum}`,
       options: standardizedOptions,
       correctAnswer: answer,
+      answerText,
+      explanation,
       confidence,
       status,
       verificationStatus,
